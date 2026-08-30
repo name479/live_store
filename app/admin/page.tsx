@@ -46,7 +46,7 @@ interface Order {
 const ADMIN_PASSWORD = 'admin';
 
 export default function AdminDashboard() {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
   const [pinInput, setPinInput] = useState('');
   const [authError, setAuthError] = useState(false);
 
