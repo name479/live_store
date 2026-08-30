@@ -490,22 +490,34 @@ export default function AdminDashboard() {
 
   const totalRevenue = orders.reduce((sum, o) => sum + Number(o.total_amount), 0);
 
+  // واجهة تسجيل الدخول الزرقاء الفسيحة
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-[#FAFAFA] flex items-center justify-center p-4 text-zinc-800" dir="rtl">
-        <div className="bg-white/80 backdrop-blur-xl w-full max-w-sm rounded-[28px] p-8 border border-zinc-200/80 shadow-[0_8px_30px_rgb(0,0,0,0.04)] text-center space-y-6">
-          <div className="w-13 h-13 bg-zinc-900 text-white rounded-2xl flex items-center justify-center mx-auto text-xl shadow-lg">
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <div className="min-h-screen bg-gradient-to-br from-blue-600 via-indigo-600 to-blue-700 flex flex-col items-center justify-center p-6 text-white relative overflow-hidden" dir="rtl">
+        {/* تأثيرات إضاءة خلفية ناعمة */}
+        <div className="absolute top-1/4 -right-20 w-96 h-96 bg-white/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-1/4 -left-20 w-96 h-96 bg-blue-400/20 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="w-full max-w-md text-center space-y-8 relative z-10">
+          {/* أيقونة القفل الفخمة */}
+          <div className="w-20 h-20 bg-white/15 backdrop-blur-xl border border-white/30 rounded-3xl flex items-center justify-center mx-auto shadow-2xl shadow-black/10">
+            <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
           </div>
-          <div>
-            <h2 className="text-xl font-black text-zinc-900 tracking-tight">لوحة تحكم المتجر</h2>
-            <p className="text-xs text-zinc-400 mt-1 font-medium">أدخل رمز المرور للوصول الآمن</p>
+
+          {/* نصوص الترحيب والإرشاد */}
+          <div className="space-y-3">
+            <h1 className="text-3xl sm:text-4xl font-black tracking-tight drop-shadow-sm">مرحباً بك مجدداً</h1>
+            <p className="text-base text-blue-100 font-medium">أدخل رمز المرور للدخول إلى لوحة التحكم</p>
+            <div className="inline-block bg-white/15 backdrop-blur-md px-4 py-1.5 rounded-full border border-white/20 text-xs font-semibold text-blue-100">
+              💡 يرجى كتابة الرمز بأحرف صغيرة (Small letters)
+            </div>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
+          {/* نموذج إدخال الرمز المفتوح والواسع */}
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div className="space-y-2">
               <div className="relative flex items-center">
                 <input
                   type={showPassword ? 'text' : 'password'}
@@ -516,36 +528,41 @@ export default function AdminDashboard() {
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck="false"
-                  className="w-full p-3.5 pl-11 bg-zinc-50 border border-zinc-200 rounded-2xl text-center text-base font-bold text-zinc-900 tracking-wider placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900/20 focus:border-zinc-900 focus:bg-white transition duration-200"
+                  className="w-full py-4 px-6 pl-14 bg-blue-900/40 backdrop-blur-md border-2 border-white/70 rounded-2xl text-center text-xl font-bold text-white placeholder:text-blue-200/50 focus:outline-none focus:ring-4 focus:ring-white/30 focus:border-white focus:bg-blue-900/60 transition-all duration-200 shadow-xl"
                 />
+                
+                {/* زر إظهار وإخفاء الباسورد */}
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute left-3 p-1.5 text-zinc-400 hover:text-zinc-700 transition"
+                  className="absolute left-4 p-2 text-blue-200 hover:text-white transition active:scale-95"
                   title={showPassword ? 'إخفاء الرمز' : 'إظهار الرمز'}
                 >
                   {showPassword ? (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />
                     </svg>
                   ) : (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                       <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                     </svg>
                   )}
                 </button>
               </div>
+
               {authError && (
-                <p className="text-xs text-rose-500 font-bold mt-2">رمز المرور غير صحيح</p>
+                <p className="text-sm text-red-200 bg-red-500/30 backdrop-blur-md border border-red-300/40 py-2 px-4 rounded-xl font-bold">
+                  رمز المرور غير صحيح، يرجى المحاولة مجدداً
+                </p>
               )}
             </div>
 
             <button
               type="submit"
-              className="w-full bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-bold py-3.5 rounded-2xl transition duration-200 active:scale-[0.98] shadow-sm"
+              className="w-full bg-white hover:bg-blue-50 text-blue-900 text-sm sm:text-base font-extrabold py-4 rounded-2xl transition duration-200 active:scale-[0.98] shadow-2xl hover:shadow-white/20"
             >
-              دخول الإدارة
+              تسجيل الدخول
             </button>
           </form>
         </div>
