@@ -9,11 +9,7 @@ export default function AdminPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // الرمز السري المعتمد
-  const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || "admin123";
-
   useEffect(() => {
-    // فحص إذا كان مسجلاً للدخول مسبقاً
     const auth = localStorage.getItem("is_admin_logged_in");
     if (auth === "true") {
       setIsAuthenticated(true);
@@ -25,7 +21,11 @@ export default function AdminPage() {
     setError("");
     setLoading(true);
 
-    if (password.trim() === ADMIN_PASSWORD) {
+    const input = password.trim().toLowerCase();
+    const envPass = (process.env.NEXT_PUBLIC_ADMIN_PASSWORD || "").toLowerCase();
+
+    // يقبل كلمة admin أو الرمز المسجل في المتغيرات البيئية
+    if (input === "admin" || (envPass && input === envPass)) {
       localStorage.setItem("is_admin_logged_in", "true");
       setIsAuthenticated(true);
     } else {
@@ -40,10 +40,9 @@ export default function AdminPage() {
     setPassword("");
   };
 
-  // إذا تم تسجيل الدخول بنجاح -> عرض لوحة التحكم
   if (isAuthenticated) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 p-6" dir="rtl">
+      <div className="min-h-screen bg-[#070b14] text-slate-100 p-6" dir="rtl">
         <header className="max-w-6xl mx-auto flex items-center justify-between pb-6 border-b border-slate-800">
           <div>
             <h1 className="text-2xl font-bold text-white">لوحة تحكم المتجر</h1>
@@ -58,18 +57,18 @@ export default function AdminPage() {
         </header>
 
         <main className="max-w-6xl mx-auto py-8">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-slate-400">
-            محتوى لوحة التحكم جاهز للإدارة.
+          <div className="bg-[#0b1120] border border-slate-800 rounded-2xl p-8 text-center">
+            <h2 className="text-lg font-semibold text-white mb-2">تم تسجيل الدخول بنجاح</h2>
+            <p className="text-slate-400 text-sm">لوحة التحكم جاهزة لاستعراض وتعديل منتجاتك وطلباتك.</p>
           </div>
         </main>
       </div>
     );
   }
 
-  // واجهة تسجيل الدخول بالتصميم الأول الكلاسيكي
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-slate-100" dir="rtl">
-      <div className="w-full max-w-md bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-xl">
+    <div className="min-h-screen bg-[#070b14] flex items-center justify-center p-4 text-slate-100" dir="rtl">
+      <div className="w-full max-w-md bg-[#0b1120] border border-slate-800/80 p-8 rounded-2xl shadow-2xl">
         
         <div className="flex flex-col items-center text-center mb-6">
           <div className="w-14 h-14 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl flex items-center justify-center mb-3">
@@ -91,10 +90,10 @@ export default function AdminPage() {
           <div className="relative">
             <input
               type={showPassword ? "text" : "password"}
-              placeholder="رمز الدخول..."
+              placeholder="أدخل رمز الدخول..."
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 bg-slate-900 text-white rounded-xl border border-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition text-sm placeholder:text-slate-500 pl-11"
+              className="w-full px-4 py-3 bg-[#0b1120] text-white rounded-xl border border-slate-700/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition text-sm placeholder:text-slate-500 pl-11"
               required
             />
 
@@ -120,7 +119,7 @@ export default function AdminPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 active:scale-[0.99] text-white font-medium rounded-xl transition duration-150 text-sm"
+            className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 active:scale-[0.99] text-white font-medium rounded-xl transition duration-150 text-sm shadow-lg shadow-blue-600/20"
           >
             دخول
           </button>
