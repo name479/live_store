@@ -2128,7 +2128,6 @@ export default function AdminDashboard() {
                           <span className="text-[10px] text-zinc-400 font-medium">عرض صفحة تجربة المستخدم</span>
                         </div>
                       </div>
-                      <span className="text-zinc-400 text-sm font-bold pl-1">←</span>
                     </a>
 
                     <button
@@ -2146,7 +2145,6 @@ export default function AdminDashboard() {
                           <span className="text-[10px] text-rose-400 font-medium">إنهاء جلسة الإدارة الحالية</span>
                         </div>
                       </div>
-                      <span className="text-rose-400 text-sm font-bold pl-1">←</span>
                     </button>
                   </div>
                 </div>
