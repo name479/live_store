@@ -373,7 +373,6 @@ export default function Home() {
 
   const handleOpenProduct = (product: Product) => {
     setSelectedProduct(product);
-    // اختيار أول خيار متوفر بالمخزن تلقائياً
     const firstInStockVariant = product.product_variants?.find((v) => (v.stock_quantity || 0) > 0);
     setSelectedVariant(firstInStockVariant || product.product_variants?.[0] || null);
     setStep('details');
@@ -679,6 +678,7 @@ export default function Home() {
       {/* المحتوى الرئيسي */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10 space-y-8 sm:space-y-12">
         
+        {/* البانر الترويجي التفاعلي للخصومات بتصميم احترافي متناسق وصورة أوضح */}
         {discountProducts.length > 0 ? (
           <section className="relative overflow-hidden rounded-[32px] bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-800 text-white p-6 sm:p-12 shadow-2xl">
             {discountProducts.map((product, idx) => {
@@ -719,27 +719,21 @@ export default function Home() {
                     <div className="flex flex-wrap items-center justify-center lg:justify-start gap-3 pt-4">
                       <button
                         onClick={() => handleOpenProduct(product)}
-                        className="bg-white text-zinc-950 hover:bg-zinc-100 text-xs sm:text-sm font-black px-8 py-3.5 rounded-full transition active:scale-95 shadow-lg"
+                        className="bg-white text-zinc-950 hover:bg-zinc-100 text-xs sm:text-sm font-black px-10 py-3.5 rounded-full transition active:scale-95 shadow-lg"
                       >
                         طلب الآن
-                      </button>
-                      <button
-                        onClick={(e) => addToCart(product, product.product_variants?.[0] || null, e)}
-                        className="bg-white/10 hover:bg-white/20 text-white border border-white/20 text-xs sm:text-sm font-bold px-6 py-3.5 rounded-full transition active:scale-95"
-                      >
-                        + إضافة للسلة
                       </button>
                     </div>
                   </div>
 
-                  <div className="w-56 h-56 sm:w-80 sm:h-80 rounded-3xl overflow-hidden shadow-2xl bg-zinc-800/50 border border-white/10 shrink-0">
+                  <div className="w-48 h-48 sm:w-72 sm:h-72 rounded-3xl overflow-hidden shadow-2xl bg-zinc-900 p-2.5 border border-white/15 shrink-0 flex items-center justify-center">
                     <img
                       src={bannerImg}
                       alt={product.title}
                       onError={(e) => {
                         (e.target as HTMLImageElement).src = 'https://placehold.co/600x600?text=Product';
                       }}
-                      className="w-full h-full object-cover object-center rounded-3xl"
+                      className="w-full h-full object-cover object-center rounded-2xl"
                     />
                   </div>
                 </div>
@@ -780,28 +774,26 @@ export default function Home() {
               </div>
             )}
           </section>
-        ) : products.length > 0 ? (
-          <section className="relative overflow-hidden rounded-[32px] bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-800 text-white p-6 sm:p-12 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-6">
-            <div className="space-y-3 max-w-lg text-center sm:text-right">
-              <span className="text-rose-400 text-xs font-bold tracking-wider block">
-                {liveStreamText}
-              </span>
-              <h2 className="text-2xl sm:text-4xl font-black leading-tight">
-                تشكيلة {storeName} المميزة
+        ) : (
+          <section className="relative overflow-hidden rounded-[32px] text-white p-6 sm:p-12 shadow-2xl min-h-[200px] sm:min-h-[260px] flex items-center justify-center sm:justify-start">
+            {/* الخلفية بالصورة المطلوبة */}
+            <div 
+              className="absolute inset-0 bg-cover bg-center z-0" 
+              style={{ backgroundImage: `url('https://t4.ftcdn.net/jpg/03/13/65/17/360_F_313651795_OUrd7HrFYuxo9LXuuREFvRyIPeEfVSLj.jpg')` }}
+            />
+            {/* طبقة عتامة ناعمة لضمان وضوح النص في الموبايل والشاشات الكبيرة */}
+            <div className="absolute inset-0 bg-black/55 backdrop-blur-[1px] z-0" />
+
+            <div className="relative z-10 space-y-2.5 max-w-xl text-center sm:text-right px-2 sm:px-0">
+              <h2 className="text-2xl sm:text-4xl font-black leading-tight tracking-tight drop-shadow-md">
+                أهلاً بك في {storeName}
               </h2>
-              <p className="text-zinc-400 text-xs sm:text-sm">
-                اطلب منتجاتك المفضلة بأسهل طريقة، والدفع نقداً عند استلام شحنتك.
+              <p className="text-zinc-100 text-xs sm:text-sm leading-relaxed font-medium drop-shadow-sm">
+                تصفح أحدث التشكيلات والمنتجات المتوفرة لدينا، واطلب بكل سهولة مع خدمة الدفع عند الاستلام.
               </p>
             </div>
-            <div className="w-48 sm:w-64 h-48 sm:h-56 rounded-2xl overflow-hidden shadow-2xl shrink-0">
-              <img
-                src={products[0]?.product_images?.[0]?.image_url || 'https://placehold.co/600x600'}
-                alt=""
-                className="w-full h-full object-cover object-center"
-              />
-            </div>
           </section>
-        ) : null}
+        )}
 
         {/* فلاتر التصنيفات وشريط البحث في الموبايل */}
         <section className="space-y-4">
@@ -1281,7 +1273,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={(e) => addToCart(selectedProduct, selectedVariant, e)}
-                        className="bg-zinc-100 hover:bg-zinc-200 text-zinc-900 text-xs font-black py-3.5 rounded-xl transition active:scale-95"
+                        className="bg-zinc-100 hover:bg-zinc-200 text-zinc-900 text-xs font-black py-3.5 rounded-xl transition"
                       >
                         + إضافة للسلة
                       </button>
