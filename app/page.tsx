@@ -85,6 +85,22 @@ export default function Home() {
   const [locationStatus, setLocationStatus] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
+  // استرجاع معلومات الزبون المحفوظة مسبقاً في المتصفح
+  useEffect(() => {
+    try {
+      const savedCustomer = localStorage.getItem('customer_delivery_info');
+      if (savedCustomer) {
+        const data = JSON.parse(savedCustomer);
+        if (data.name) setName(data.name);
+        if (data.phone) setPhone(data.phone);
+        if (data.address) setAddress(data.address);
+        if (data.mapsLink) setMapsLink(data.mapsLink);
+      }
+    } catch (e) {
+      console.warn('Failed to load saved customer info:', e);
+    }
+  }, []);
+
   const fetchSettings = useCallback(async () => {
     try {
       const { data } = await supabase.from('store_settings').select('key, value');
@@ -267,15 +283,20 @@ export default function Home() {
     setSelectedProduct(null);
     setSelectedVariant(null);
     setStep('details');
-    setName('');
-    setPhone('');
-    setAddress('');
     setNotes('');
-    setMapsLink('');
-    setLocationStatus('');
+
+    // إذا لم تكن البيانات مخزنة مسبقاً في المتصفح يتم تصفيرها
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('customer_delivery_info') : null;
+    if (!saved) {
+      setName('');
+      setPhone('');
+      setAddress('');
+      setMapsLink('');
+      setLocationStatus('');
+    }
   };
 
-// نظام ذكي لفحص دقة الموقع والتنبيه عند استخدام الحاسوب
+// نظام فحص دقة الموقع ومنع قراءات الـ IP الخاطئة
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
       alert('متصفحك لا يدعم خاصية تحديد الموقع.');
@@ -283,40 +304,57 @@ export default function Home() {
     }
 
     setMapsLink('loading');
-    setLocationStatus('جاري الاتصال بالأقمار الصناعية لتحديد موقعك...');
+    setLocationStatus('جاري البحث عن إشارة دقيقة (GPS / Wi-Fi)...');
 
-    navigator.geolocation.getCurrentPosition(
+    let watchId: number;
+    let foundAccurate = false;
+
+    // مهلة زمنية: إذا لم يجد دقة حقيقية خلال 7 ثوانٍ
+    const timer = setTimeout(() => {
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+
+      if (!foundAccurate) {
+        setMapsLink('');
+        setLocationStatus('تعذر التقاط إشارة GPS دقيقة (جهاز بدون GPS).');
+        alert(
+          'تنبيه: لم يتم التقاط إشارة GPS دقيقة من جهازك (غالباً بسبب استخدام حاسوب بدون شريحة موقع).\n\nحرصاً على وصول الطلب للمكان الصحيح، يرجى كتابة العنوان التفصيلي وأقرب نقطة دالة يدوياً، أو استخدام الهاتف المحمول لتحديد الإحداثيات بدقة.'
+        );
+      }
+    }, 7000);
+
+    watchId = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude, accuracy } = position.coords;
-        const url = `https://www.google.com/maps?q=${latitude},${longitude}`;
-        setMapsLink(url);
 
-        // إذا كانت دقة الإشارة ضعيفة (أكثر من 150 متر - حالة الحواسيب عادة)
-        if (accuracy > 150) {
-          setLocationStatus(`تم تحديد الموقع تقريبياً (دقة: ${Math.round(accuracy)} م) - يرجى كتابة العنوان بدقة`);
-          alert('تنبيه: يبدو أنك تستخدم حاسوباً بدون GPS أو شبكة إنترنت تقريبية. تم التقاط موقع تقريبي، لذا يرجى التأكد من كتابة العنوان التفصيلي في الحقل المخصص.');
-        } else {
-          // حالة الهواتف ذات إشارة GPS الدقيقة
-          setLocationStatus(`تم التقاط موقعك الدقيق بنجاح (دقة: ${Math.round(accuracy)} متر)`);
+        // فحص الدقة: إذا كانت الدقة أفضل من 250 متر فهذا مسح حقيقي وليس IP عشوائي
+        if (accuracy <= 250) {
+          foundAccurate = true;
+          clearTimeout(timer);
+          navigator.geolocation.clearWatch(watchId);
+
+          const url = `https://www.google.com/maps?q=${latitude},${longitude}`;
+          setMapsLink(url);
+          setLocationStatus(`✓ تم التقاط موقعك الفعلي بدقة (هامش خطأ: ${Math.round(accuracy)} متر)`);
         }
       },
       (error) => {
+        clearTimeout(timer);
+        if (watchId) navigator.geolocation.clearWatch(watchId);
         setMapsLink('');
         setLocationStatus('');
         if (error.code === error.PERMISSION_DENIED) {
-          alert('يرجى السماح بصلاحية الوصول للموقع الجغرافي من إعدادات المتصفح.');
+          alert('يرجى السماح بصلاحية الموقع في المتصفح لتحديد مكان التوصيل.');
         } else {
-          alert('تعذر جلب إحداثيات دقيقة، يرجى كتابة العنوان يدوياً.');
+          alert('تعذر الوصول لخدمة الموقع، يرجى كتابة العنوان يدوياً.');
         }
       },
       {
         enableHighAccuracy: true,
-        timeout: 15000,
+        timeout: 10000,
         maximumAge: 0,
       }
     );
   };
-
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -379,7 +417,22 @@ export default function Home() {
       }
     }
 
-    // 2. تجميع روابط الصور المباشرة (حل مشكلة الصور نهائياً)
+    // حفظ معلومات الزبون في localStorage للمرات القادمة
+    try {
+      localStorage.setItem(
+        'customer_delivery_info',
+        JSON.stringify({
+          name,
+          phone,
+          address,
+          mapsLink: mapsLink && mapsLink !== 'loading' ? mapsLink : null,
+        })
+      );
+    } catch (storageErr) {
+      console.warn('Failed to save customer delivery info:', storageErr);
+    }
+
+    // 2. تجميع روابط الصور المباشرة
     try {
       const imagesList: string[] = [];
 
@@ -387,7 +440,6 @@ export default function Home() {
         let rawUrl = item.product?.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim() || '';
         
         if (rawUrl) {
-          // إذا كانت الصورة مخزنة كمسار داخل Bucket منتجات Supabase
           if (!rawUrl.startsWith('http')) {
             const { data: pubData } = supabase.storage.from('products').getPublicUrl(rawUrl);
             if (pubData?.publicUrl) rawUrl = pubData.publicUrl;
