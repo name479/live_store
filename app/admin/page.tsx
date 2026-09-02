@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 
 interface Variant {
@@ -62,18 +62,18 @@ export default function AdminDashboard() {
   // التبويبات الأربعة
   const [activeTab, setActiveTab] = useState<'orders' | 'products' | 'add_product' | 'settings'>('orders');
 
-  // حالات فتح وإغلاق القوائم المنسدلة في صفحة الإضافة
+  // حالات فتح وإغلاق القوائم المنسدلة
   const [openManualAdd, setOpenManualAdd] = useState(false);
   const [openExcelAdd, setOpenExcelAdd] = useState(false);
-
-  // حالات فتح وإغلاق القوائم المنسدلة في صفحة الإعدادات
   const [openProfileSettings, setOpenProfileSettings] = useState(false);
   const [openSecuritySettings, setOpenSecuritySettings] = useState(false);
   const [openSessionSettings, setOpenSessionSettings] = useState(false);
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
-  const [newOrderAlert, setNewOrderAlert] = useState<string | null>(null);
+  
+  // شريط الإشعار الموحد (مطابق لواجهة الزبائن تماماً)
+  const [adminToast, setAdminToast] = useState<string | null>(null);
   
   // شريط البحث
   const [showSearchInput, setShowSearchInput] = useState(false);
@@ -104,7 +104,6 @@ export default function AdminDashboard() {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [savingGeneralSettings, setSavingGeneralSettings] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
-  const [settingsSuccessToast, setSettingsSuccessToast] = useState<string | null>(null);
 
   // حالات البحث والفلترة للمنتجات
   const [searchQuery, setSearchQuery] = useState('');
@@ -121,7 +120,7 @@ export default function AdminDashboard() {
   const [price, setPrice] = useState('');
   const [originalPrice, setOriginalPrice] = useState('');
   const [imageUrl, setImageUrl] = useState('');
-  const [variantsList, setVariantsList] = useState<{ color: string; stock: number }[]>([
+  const [variantsList, setVariantsList] = useState<{ id?: string; color: string; stock: number }[]>([
     { color: 'أسود', stock: 10 },
   ]);
 
@@ -153,10 +152,37 @@ export default function AdminDashboard() {
     }
   };
 
-  const showToast = (msg: string) => {
-    setSettingsSuccessToast(msg);
-    setTimeout(() => setSettingsSuccessToast(null), 3500);
-  };
+  const showToast = useCallback((msg: string) => {
+    setAdminToast(msg);
+    setTimeout(() => setAdminToast(null), 3000);
+  }, []);
+
+  const fetchSettings = useCallback(async () => {
+    try {
+      const { data } = await supabase.from('store_settings').select('key, value');
+      if (data) {
+        data.forEach((item) => {
+          if (item.key === 'store_name') {
+            setStoreName(item.value);
+            setNewStoreName(item.value);
+          }
+          if (item.key === 'profile_avatar_url') {
+            setProfileAvatarUrl(item.value);
+            setNewAvatarUrl(item.value);
+          }
+          if (item.key === 'live_stream_text') {
+            setLiveStreamText(item.value);
+            setNewLiveStreamText(item.value);
+          }
+          if (item.key === 'admin_password') {
+            setAdminPin(item.value);
+          }
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
 
   useEffect(() => {
     const savedAuth = sessionStorage.getItem('admin_auth');
@@ -164,7 +190,7 @@ export default function AdminDashboard() {
       setIsAuthenticated(true);
     }
     fetchSettings();
-  }, []);
+  }, [fetchSettings]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -176,7 +202,7 @@ export default function AdminDashboard() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const fetchOrders = async () => {
+  const fetchOrders = useCallback(async () => {
     setLoadingOrders(true);
     const { data, error } = await supabase
       .from('orders')
@@ -205,33 +231,111 @@ export default function AdminDashboard() {
       );
     }
     setLoadingOrders(false);
+  }, []);
+
+  const fetchProducts = useCallback(async () => {
+    setLoadingProducts(true);
+    const { data: prods, error: prodErr } = await supabase
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    const { data: orderItems } = await supabase
+      .from('order_items')
+      .select('product_id, quantity');
+
+    const salesMap: Record<string, number> = {};
+    (orderItems || []).forEach((item) => {
+      if (item.product_id) {
+        salesMap[item.product_id] = (salesMap[item.product_id] || 0) + (item.quantity || 1);
+      }
+    });
+
+    if (!prodErr && prods) {
+      const fullProducts = await Promise.all(
+        prods.map(async (p) => {
+          const { data: images } = await supabase
+            .from('product_images')
+            .select('id, image_url')
+            .eq('product_id', p.id);
+
+          const { data: variants } = await supabase
+            .from('product_variants')
+            .select('id, color, size, stock_quantity')
+            .eq('product_id', p.id);
+
+          const totalStock = (variants || []).reduce((sum, v) => sum + (v.stock_quantity || 0), 0);
+
+          return {
+            ...p,
+            sales_count: salesMap[p.id] || 0,
+            total_stock: totalStock,
+            product_images: images || [],
+            product_variants: variants || [],
+          };
+        })
+      );
+      setProducts(fullProducts as Product[]);
+    }
+    setLoadingProducts(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    fetchOrders();
+    fetchProducts();
+    fetchSettings();
+
+    const channel = supabase
+      .channel('realtime_admin_sync')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'orders' },
+        (payload) => {
+          playNotificationSound();
+          const newOrder = payload.new as { id: string; customer_name?: string; total_amount?: number; created_at: string };
+          
+          showToast(`طلب جديد من ${newOrder.customer_name || 'عميل'} ($${newOrder.total_amount || 0})`);
+
+          setNotifications((prev) => [
+            {
+              id: newOrder.id,
+              customer_name: newOrder.customer_name || 'عميل جديد',
+              total_amount: newOrder.total_amount || 0,
+              created_at: newOrder.created_at || new Date().toISOString(),
+              read: false,
+            },
+            ...prev,
+          ]);
+
+          fetchOrders();
+          fetchProducts();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isAuthenticated, fetchOrders, fetchProducts, fetchSettings, showToast]);
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = pinInput.trim();
+    if (cleaned === adminPin) {
+      setIsAuthenticated(true);
+      sessionStorage.setItem('admin_auth', 'true');
+      setAuthError(false);
+    } else {
+      setAuthError(true);
+      setPinInput('');
+    }
   };
 
-  const fetchSettings = async () => {
-    try {
-      const { data } = await supabase.from('store_settings').select('key, value');
-      if (data) {
-        data.forEach((item) => {
-          if (item.key === 'store_name') {
-            setStoreName(item.value);
-            setNewStoreName(item.value);
-          }
-          if (item.key === 'profile_avatar_url') {
-            setProfileAvatarUrl(item.value);
-            setNewAvatarUrl(item.value);
-          }
-          if (item.key === 'live_stream_text') {
-            setLiveStreamText(item.value);
-            setNewLiveStreamText(item.value);
-          }
-          if (item.key === 'admin_password') {
-            setAdminPin(item.value);
-          }
-        });
-      }
-    } catch (e) {
-      console.error(e);
-    }
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    sessionStorage.removeItem('admin_auth');
   };
 
   const handleSaveGeneralSettings = async (e: React.FormEvent) => {
@@ -308,118 +412,13 @@ export default function AdminDashboard() {
 
       const { data } = supabase.storage.from('products').getPublicUrl(filePath);
       setNewAvatarUrl(data.publicUrl);
+      showToast('تم رفع الصورة بنجاح');
     } catch (err) {
       console.error(err);
       alert('تعذر رفع الصورة');
     } finally {
       setUploadingAvatar(false);
     }
-  };
-
-  const fetchProducts = async () => {
-    setLoadingProducts(true);
-    const { data: prods, error: prodErr } = await supabase
-      .from('products')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    const { data: orderItems } = await supabase
-      .from('order_items')
-      .select('product_id, quantity');
-
-    const salesMap: Record<string, number> = {};
-    (orderItems || []).forEach((item) => {
-      if (item.product_id) {
-        salesMap[item.product_id] = (salesMap[item.product_id] || 0) + (item.quantity || 1);
-      }
-    });
-
-    if (!prodErr && prods) {
-      const fullProducts = await Promise.all(
-        prods.map(async (p) => {
-          const { data: images } = await supabase
-            .from('product_images')
-            .select('id, image_url')
-            .eq('product_id', p.id);
-
-          const { data: variants } = await supabase
-            .from('product_variants')
-            .select('id, color, size, stock_quantity')
-            .eq('product_id', p.id);
-
-          const totalStock = (variants || []).reduce((sum, v) => sum + (v.stock_quantity || 0), 0);
-
-          return {
-            ...p,
-            sales_count: salesMap[p.id] || 0,
-            total_stock: totalStock,
-            product_images: images || [],
-            product_variants: variants || [],
-          };
-        })
-      );
-      setProducts(fullProducts as Product[]);
-    }
-    setLoadingProducts(false);
-  };
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
-
-    fetchOrders();
-    fetchProducts();
-    fetchSettings();
-
-    const channel = supabase
-      .channel('realtime_admin_sync')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'orders' },
-        (payload) => {
-          playNotificationSound();
-          const newOrder = payload.new as { id: string; customer_name?: string; total_amount?: number; created_at: string };
-          
-          setNewOrderAlert(`طلب وارد جديد: ${newOrder.customer_name || 'عميل'} ($${newOrder.total_amount || 0})`);
-          setTimeout(() => setNewOrderAlert(null), 6000);
-
-          setNotifications((prev) => [
-            {
-              id: newOrder.id,
-              customer_name: newOrder.customer_name || 'عميل جديد',
-              total_amount: newOrder.total_amount || 0,
-              created_at: newOrder.created_at || new Date().toISOString(),
-              read: false,
-            },
-            ...prev,
-          ]);
-
-          fetchOrders();
-          fetchProducts();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [isAuthenticated]);
-
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleaned = pinInput.trim();
-    if (cleaned === adminPin) {
-      setIsAuthenticated(true);
-      sessionStorage.setItem('admin_auth', 'true');
-      setAuthError(false);
-    } else {
-      setAuthError(true);
-      setPinInput('');
-    }
-  };
-
-  const handleLogout = () => {
-    setIsAuthenticated(false);
-    sessionStorage.removeItem('admin_auth');
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -437,13 +436,14 @@ export default function AdminDashboard() {
         .upload(filePath, file);
 
       if (uploadError) {
-        alert('حدث خطأ أثناء رفع الصورة: تأكد من إنشاء الـ Bucket باسم products');
+        alert('حدث خطأ أثناء رفع الصورة');
         setUploadingImage(false);
         return;
       }
 
       const { data } = supabase.storage.from('products').getPublicUrl(filePath);
       setImageUrl(data.publicUrl);
+      showToast('تم رفع صورة المنتج');
     } catch (err) {
       console.error(err);
       alert('تعذر رفع الملف');
@@ -496,6 +496,7 @@ export default function AdminDashboard() {
     if (product.product_variants && product.product_variants.length > 0) {
       setVariantsList(
         product.product_variants.map((v) => ({
+          id: v.id,
           color: v.color,
           stock: v.stock_quantity,
         }))
@@ -513,6 +514,7 @@ export default function AdminDashboard() {
     if (!error) {
       setOrders((prev) => prev.filter((o) => o.id !== id));
       setNotifications((prev) => prev.filter((n) => n.id !== id));
+      showToast('تمت أرشفة الطلب بنجاح');
     }
   };
 
@@ -527,18 +529,46 @@ export default function AdminDashboard() {
       setProducts((prev) =>
         prev.map((p) => (p.id === product.id ? { ...p, is_available: nextStatus } : p))
       );
+      showToast(nextStatus ? 'تم عرض المنتج في المتجر' : 'تم إيقاف عرض المنتج');
     }
   };
 
-  const handleDeleteProduct = async (id: string) => {
-    if (!confirm('هل أنت متأكد من حذف هذا المنتج نهائياً؟')) return;
-    const { error } = await supabase.from('products').delete().eq('id', id);
-    if (!error) {
+const handleDeleteProduct = async (id: string) => {
+    if (!confirm('هل أنت متأكد من حذف هذا المنتج نهائياً بجميع خياراته وسجلاته؟')) return;
+
+    try {
+      // 1. فك ارتباط الفاريانتس في الطلبات القديمة
+      const { data: vars } = await supabase.from('product_variants').select('id').eq('product_id', id);
+      if (vars && vars.length > 0) {
+        const vIds = vars.map((v) => v.id);
+        await supabase.from('order_items').update({ variant_id: null }).in('variant_id', vIds);
+      }
+
+      // 2. حذف الفاريانتس التابعة للمنتج
+      await supabase.from('product_variants').delete().eq('product_id', id);
+
+      // 3. محاولة حذف الصور فقط إن وُجد جدولها (تجاهل الخطأ إن لم يكن موجوداً)
+      try {
+        await supabase.from('product_images').delete().eq('product_id', id);
+      } catch (_) {}
+
+      // 4. حذف المنتج نفسه
+      const { error } = await supabase.from('products').delete().eq('id', id);
+
+      if (error) {
+        alert('تعذر حذف المنتج: ' + error.message);
+        return;
+      }
+
       setProducts((prev) => prev.filter((p) => p.id !== id));
+      showToast('تم حذف المنتج بنجاح');
+    } catch (err: any) {
+      alert('خطأ أثناء الحذف: ' + err.message);
     }
   };
 
-  const handleSaveProduct = async (e: React.FormEvent) => {
+  // حفظ وتعديل المنتج مع الحل الجذري لمنع تكرار الخيارات (تحديث الفاريانتس بذكاء)
+const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmittingProduct(true);
 
@@ -548,24 +578,26 @@ export default function AdminDashboard() {
     }
 
     const payload = {
-      title: title,
-      description: desc,
+      title: title.trim(),
+      description: desc.trim(),
       price: parseFloat(price) || 0,
       original_price: originalPrice ? parseFloat(originalPrice) : null,
     };
 
     if (isEditing && editingProductId) {
+      // 1. تحديث بيانات المنتج
       const { error: updateError } = await supabase
         .from('products')
         .update(payload)
         .eq('id', editingProductId);
 
       if (updateError) {
-        alert('حدث خطأ أثناء تعديل بيانات المنتج');
+        alert('خطأ أثناء التعديل: ' + updateError.message);
         setSubmittingProduct(false);
         return;
       }
 
+      // 2. تحديث الصورة
       if (imageUrl) {
         await supabase.from('product_images').delete().eq('product_id', editingProductId);
         await supabase.from('product_images').insert([
@@ -573,30 +605,41 @@ export default function AdminDashboard() {
         ]);
       }
 
-      await supabase.from('product_variants').delete().eq('product_id', editingProductId);
+      // 3. تنظيف وتحديث الفاريانتس والتخلص من التكرار نهائياً:
+      const { data: existingVars } = await supabase
+        .from('product_variants')
+        .select('id, color')
+        .eq('product_id', editingProductId);
+
+      if (existingVars && existingVars.length > 0) {
+        const vIds = existingVars.map((v) => v.id);
+        // فك ارتباط الطلبات السابقة بالفاريانتس حتى يسمح بحذف المكررات
+        await supabase.from('order_items').update({ variant_id: null }).in('variant_id', vIds);
+        await supabase.from('product_variants').delete().eq('product_id', editingProductId);
+      }
+
+      // إدخال الخيارات النظيفة الجديدة فقط
       const variantsToInsert = validVariants.map((v) => ({
         product_id: editingProductId,
-        color: v.color,
+        color: v.color.trim(),
         size: 'Standard',
         stock_quantity: v.stock,
       }));
+
       await supabase.from('product_variants').insert(variantsToInsert);
-      showToast('تم تعديل المنتج بنجاح');
+
+      showToast('تم حفظ التعديلات وتنظيف الخيارات بنجاح');
       setShowEditModal(false);
     } else {
+      // إضافة منتج جديد
       const { data: prodData, error: prodError } = await supabase
         .from('products')
-        .insert([
-          {
-            ...payload,
-            is_available: true,
-          },
-        ])
+        .insert([{ ...payload, is_available: true }])
         .select()
         .single();
 
       if (prodError || !prodData) {
-        alert('خطأ أثناء إضافة المنتج');
+        alert('خطأ أثناء إضافة المنتج: ' + prodError?.message);
         setSubmittingProduct(false);
         return;
       }
@@ -609,13 +652,14 @@ export default function AdminDashboard() {
 
       const variantsToInsert = validVariants.map((v) => ({
         product_id: prodData.id,
-        color: v.color,
+        color: v.color.trim(),
         size: 'Standard',
         stock_quantity: v.stock,
       }));
+
       await supabase.from('product_variants').insert(variantsToInsert);
 
-      showToast('تمت إضافة المنتج بنجاح إلى المتجر');
+      showToast('تمت إضافة المنتج بنجاح');
       resetProductForm();
       setActiveTab('products');
     }
@@ -624,7 +668,6 @@ export default function AdminDashboard() {
     fetchProducts();
   };
 
-  // استيراد ومعالجة ملفات Excel و CSV مع استخراج الصور بدقة
   const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -940,27 +983,18 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen bg-[#F8F9FA] flex flex-col md:flex-row text-zinc-800 font-sans relative antialiased" dir="rtl">
 
-      {/* شريط الإشعار الفوري للطلبات الجديدة */}
-      {newOrderAlert && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-zinc-900/90 backdrop-blur-md text-white px-5 py-3 rounded-full shadow-2xl flex items-center gap-3 border border-white/10 animate-in fade-in slide-in-from-top duration-300">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-          <span className="text-xs font-bold tracking-wide">{newOrderAlert}</span>
+      {/* شريط الإشعار الموحد (مطابق لأسلوب واجهة المتجر كبسولة سوداء وزجاجية) */}
+      {adminToast && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-zinc-900 text-white px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2.5 border border-white/10 text-xs font-bold animate-in fade-in slide-in-from-top duration-200">
+          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span>{adminToast}</span>
         </div>
       )}
 
-      {/* شريط التنبيه عند حفظ الإعدادات أو استيراد المنتجات */}
-      {settingsSuccessToast && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2 border border-white/20 animate-in fade-in slide-in-from-top duration-300 text-xs font-bold">
-          <span>✓</span>
-          <span>{settingsSuccessToast}</span>
-        </div>
-      )}
-
-      {/* السايد بار / شريط التنقل المتضمن 4 أقسام رئيسية */}
+      {/* السايد بار */}
       <aside className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-xl border-t border-zinc-200/80 px-3 py-2 md:relative md:border-t-0 md:border-l md:w-24 md:p-3 md:py-6 flex md:flex-col items-center justify-around md:justify-start shrink-0 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] md:shadow-none">
         <nav className="w-full flex md:flex-col items-center justify-around md:justify-start gap-1 md:gap-2.5">
           
-          {/* 1. الطلبات */}
           <button
             onClick={() => setActiveTab('orders')}
             className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-2.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
@@ -975,7 +1009,6 @@ export default function AdminDashboard() {
             <span className="text-[10px] md:text-[11px] tracking-tight">الطلبات</span>
           </button>
 
-          {/* 2. المنتجات */}
           <button
             onClick={() => setActiveTab('products')}
             className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-2.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
@@ -990,7 +1023,6 @@ export default function AdminDashboard() {
             <span className="text-[10px] md:text-[11px] tracking-tight">المنتجات</span>
           </button>
 
-          {/* 3. إضافة منتج */}
           <button
             onClick={() => {
               resetProductForm();
@@ -1008,7 +1040,6 @@ export default function AdminDashboard() {
             <span className="text-[10px] md:text-[11px] tracking-tight">إضافة منتج</span>
           </button>
 
-          {/* 4. الإعدادات */}
           <button
             onClick={() => setActiveTab('settings')}
             className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-2.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
@@ -1037,17 +1068,13 @@ export default function AdminDashboard() {
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between gap-3 w-full">
                 
-                {/* اسم المتجر */}
                 <div className="flex items-center">
                   <span className="text-base sm:text-lg font-black tracking-wider text-zinc-950 select-none">
                     {storeName}
                   </span>
                 </div>
 
-                {/* عناصر التحكم العلوية */}
                 <div className="flex items-center gap-2 sm:gap-3">
-                  
-                  {/* شريط البحث بدون إطار */}
                   <div className="relative flex items-center">
                     {showSearchInput ? (
                       <div className="flex items-center bg-zinc-200/60 rounded-full px-3 py-1.5 transition-all duration-200 animate-in fade-in w-40 sm:w-56">
@@ -1082,7 +1109,6 @@ export default function AdminDashboard() {
                     )}
                   </div>
 
-                  {/* قائمة الإشعارات المتجاوبة بدقة للشاشات الكبيرة والصغيرة */}
                   <div className="relative" ref={notificationsRef}>
                     <button
                       onClick={() => {
@@ -1178,7 +1204,6 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* عنوان الصفحة والوصف */}
               <div className="space-y-1">
                 <h1 className="text-2xl sm:text-3xl font-black text-zinc-900 tracking-tight">إدارة الطلبات</h1>
                 <p className="text-xs text-zinc-400 font-medium">متابعة ومعالجة الطلبات الواردة من الزبائن</p>
@@ -1356,17 +1381,13 @@ export default function AdminDashboard() {
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between gap-3 w-full">
                 
-                {/* اسم المتجر */}
                 <div className="flex items-center">
                   <span className="text-base sm:text-lg font-black tracking-wider text-zinc-950 select-none">
                     {storeName}
                   </span>
                 </div>
 
-                {/* عناصر التحكم العلوية */}
                 <div className="flex items-center gap-2 sm:gap-3">
-                  
-                  {/* شريط البحث بدون إطار للمنتجات */}
                   <div className="relative flex items-center">
                     {showSearchInput ? (
                       <div className="flex items-center bg-zinc-200/60 rounded-full px-3 py-1.5 transition-all duration-200 animate-in fade-in w-40 sm:w-56">
@@ -1401,7 +1422,6 @@ export default function AdminDashboard() {
                     )}
                   </div>
 
-                  {/* قائمة الإشعارات */}
                   <div className="relative" ref={notificationsRef}>
                     <button
                       onClick={() => {
@@ -1497,7 +1517,6 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* العنوان والوصف */}
               <div className="space-y-1">
                 <h1 className="text-2xl sm:text-3xl font-black text-zinc-900 tracking-tight">إدارة المنتجات</h1>
                 <p className="text-xs text-zinc-400 font-medium">استعراض وتعديل المخزون والأسعار وحالة المنتجات المعروضة</p>
@@ -1505,7 +1524,7 @@ export default function AdminDashboard() {
 
             </div>
 
-            {/* شريط الفلاتر القابل للتمرير */}
+            {/* شريط الفلاتر */}
             <div className="overflow-x-auto pb-1 no-scrollbar">
               <div className="flex items-center gap-2 text-xs">
                 {[
@@ -1599,11 +1618,16 @@ export default function AdminDashboard() {
                             </div>
                           )}
 
+                          {/* عرض الخيارات بدون أي تكرار */}
                           <div className="flex flex-wrap gap-1 mt-2.5">
                             {p.product_variants?.map((v, i) => (
                               <span
-                                key={i}
-                                className="text-[10px] bg-white border border-zinc-200 text-zinc-600 px-2 py-0.5 rounded-md font-semibold"
+                                key={v.id || i}
+                                className={`text-[10px] px-2 py-0.5 rounded-md font-semibold border ${
+                                  v.stock_quantity === 0
+                                    ? 'bg-rose-50 border-rose-200 text-rose-600'
+                                    : 'bg-white border-zinc-200 text-zinc-600'
+                                }`}
                               >
                                 {v.color} ({v.stock_quantity})
                               </span>
@@ -1681,7 +1705,6 @@ export default function AdminDashboard() {
                 </div>
               </button>
 
-              {/* تفاصيل الإضافة اليدوية */}
               {openManualAdd && (
                 <div className="p-6 sm:p-8 pt-0 border-t border-zinc-100 space-y-4 animate-in fade-in duration-200">
                   <form onSubmit={handleSaveProduct} className="space-y-4 pt-4">
@@ -1846,9 +1869,7 @@ export default function AdminDashboard() {
                     </svg>
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-black text-base text-zinc-900">إرفاق ملف Excel</h3>
-                    </div>
+                    <h3 className="font-black text-base text-zinc-900">إرفاق ملف Excel</h3>
                     <p className="text-xs text-zinc-400 mt-0.5 font-medium">استيراد المنتجات وقوائم الأسعار والمخزون دفعة واحدة</p>
                   </div>
                 </div>
@@ -1860,7 +1881,6 @@ export default function AdminDashboard() {
                 </div>
               </button>
 
-              {/* تفاصيل إرفاق ملف Excel */}
               {openExcelAdd && (
                 <div className="p-6 sm:p-8 pt-0 border-t border-zinc-100 space-y-4 animate-in fade-in duration-200">
                   <div className="pt-4">
@@ -2162,7 +2182,7 @@ export default function AdminDashboard() {
           <div className="bg-white w-full max-w-lg rounded-3xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar border border-zinc-200">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
               <h3 className="font-black text-base text-zinc-900">
-                تعديل بيانات المنتج
+                تعديل بيانات المنتج والمخزون
               </h3>
               <button
                 onClick={() => setShowEditModal(false)}
@@ -2180,8 +2200,8 @@ export default function AdminDashboard() {
                   required
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  placeholder="مثال: ساعة يد رجالية"
-                  className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 outline-none"
+                  placeholder="مثال: قميص رجالي"
+                  className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 outline-none"
                 />
               </div>
 
@@ -2193,7 +2213,7 @@ export default function AdminDashboard() {
                   onChange={(e) => setDesc(e.target.value)}
                   placeholder="وصف مختصر لمواصفات المنتج"
                   rows={2}
-                  className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 outline-none"
+                  className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 outline-none"
                 />
               </div>
 
@@ -2207,7 +2227,7 @@ export default function AdminDashboard() {
                     value={price}
                     onChange={(e) => setPrice(e.target.value)}
                     placeholder="45.00"
-                    className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 outline-none"
+                    className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 outline-none"
                   />
                 </div>
 
@@ -2221,7 +2241,7 @@ export default function AdminDashboard() {
                     value={originalPrice}
                     onChange={(e) => setOriginalPrice(e.target.value)}
                     placeholder="54.00"
-                    className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 outline-none"
+                    className="w-full p-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 outline-none"
                   />
                 </div>
               </div>
@@ -2232,7 +2252,7 @@ export default function AdminDashboard() {
                   <button
                     type="button"
                     onClick={handleAddVariant}
-                    className="text-[11px] font-bold text-rose-600 bg-white border border-zinc-200 hover:bg-rose-50 px-2 py-1 rounded-lg transition"
+                    className="text-[11px] font-bold text-zinc-900 bg-white border border-zinc-200 hover:bg-zinc-100 px-2 py-1 rounded-lg transition"
                   >
                     + إضافة خيار
                   </button>
@@ -2247,7 +2267,7 @@ export default function AdminDashboard() {
                         value={variant.color}
                         onChange={(e) => handleVariantChange(index, 'color', e.target.value)}
                         placeholder="اسم اللون (مثال: أسود)"
-                        className="w-2/3 p-2 bg-white border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 outline-none"
+                        className="w-2/3 p-2 bg-white border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 outline-none"
                       />
                       <input
                         type="number"
@@ -2255,7 +2275,7 @@ export default function AdminDashboard() {
                         value={variant.stock}
                         onChange={(e) => handleVariantChange(index, 'stock', e.target.value)}
                         placeholder="الكمية"
-                        className="w-1/3 p-2 bg-white border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 outline-none"
+                        className="w-1/3 p-2 bg-white border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 outline-none"
                       />
                       {variantsList.length > 1 && (
                         <button
@@ -2299,15 +2319,15 @@ export default function AdminDashboard() {
                   required
                   value={imageUrl}
                   onChange={(e) => setImageUrl(e.target.value)}
-                  placeholder="https://images.unsplash.com/..."
-                  className="w-full p-2 bg-white border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 outline-none text-left"
+                  placeholder="https://..."
+                  className="w-full p-2 bg-white border border-zinc-200 rounded-xl text-xs text-zinc-900 focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 outline-none text-left"
                   dir="ltr"
                 />
 
                 {imageUrl && (
                   <div className="flex items-center gap-2 pt-1 border-t border-zinc-200/60 mt-1">
                     <img src={imageUrl} alt="معاينة" className="w-8 h-8 object-cover rounded-lg border border-zinc-200 bg-white shrink-0" />
-                    <span className="text-[10px] text-rose-600 font-bold">تم تحديد الصورة وجاهزة للحفظ</span>
+                    <span className="text-[10px] text-emerald-600 font-bold">تم تحديد الصورة</span>
                   </div>
                 )}
               </div>
@@ -2315,7 +2335,7 @@ export default function AdminDashboard() {
               <button
                 type="submit"
                 disabled={submittingProduct || uploadingImage}
-                className="w-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-3 rounded-xl transition disabled:opacity-50 mt-1 shadow-sm"
+                className="w-full bg-zinc-900 hover:bg-black text-white text-xs font-bold py-3.5 rounded-xl transition disabled:opacity-50 mt-1 shadow-sm"
               >
                 {submittingProduct ? 'جاري الحفظ...' : 'تحديث وحفظ التعديلات'}
               </button>

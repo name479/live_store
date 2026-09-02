@@ -17,6 +17,7 @@ interface Product {
   price: number;
   original_price?: number | null;
   sales_count?: number;
+  is_available?: boolean;
   product_images: { image_url: string }[];
   product_variants: Variant[];
 }
@@ -69,10 +70,16 @@ export default function Home() {
 
   const [currentSlide, setCurrentSlide] = useState(0);
 
+  // السلة
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [cartToast, setCartToast] = useState<string | null>(null);
 
+  // قائمة المفضلة
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
+
+  // تفاصيل المنتج والشراء
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedVariant, setSelectedVariant] = useState<Variant | null>(null);
   const [step, setStep] = useState<'details' | 'checkout' | 'success'>('details');
@@ -85,7 +92,16 @@ export default function Home() {
   const [locationStatus, setLocationStatus] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
-  // استرجاع معلومات الزبون المحفوظة مسبقاً في المتصفح
+  // فحص توفر المخزون للمنتج
+  const isProductInStock = (p: Product): boolean => {
+    if (p.product_variants && p.product_variants.length > 0) {
+      const totalStock = p.product_variants.reduce((acc, v) => acc + (v.stock_quantity || 0), 0);
+      return totalStock > 0;
+    }
+    return true;
+  };
+
+  // استرجاع معلومات الزبون والمفضلة المحفوظة مسبقاً
   useEffect(() => {
     try {
       const savedCustomer = localStorage.getItem('customer_delivery_info');
@@ -96,20 +112,54 @@ export default function Home() {
         if (data.address) setAddress(data.address);
         if (data.mapsLink) setMapsLink(data.mapsLink);
       }
+
+      const savedFavs = localStorage.getItem('customer_favorites');
+      if (savedFavs) {
+        const parsed = JSON.parse(savedFavs);
+        if (Array.isArray(parsed)) {
+          setFavorites(parsed.map(String));
+        }
+      }
     } catch (e) {
-      console.warn('Failed to load saved customer info:', e);
+      console.warn('Failed to load saved info:', e);
     }
   }, []);
+
+  // إضافة أو إزالة منتج من المفضلة
+  const toggleFavorite = (productId: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const targetId = String(productId);
+    setFavorites((prev) => {
+      let updated: string[];
+      if (prev.includes(targetId)) {
+        updated = prev.filter((id) => id !== targetId);
+        setCartToast('تمت الإزالة من المفضلة');
+      } else {
+        updated = [...prev, targetId];
+        setCartToast('تمت الإضافة إلى المفضلة');
+      }
+      try {
+        localStorage.setItem('customer_favorites', JSON.stringify(updated));
+      } catch (err) {
+        console.warn(err);
+      }
+      setTimeout(() => setCartToast(null), 2500);
+      return updated;
+    });
+  };
 
   const fetchSettings = useCallback(async () => {
     try {
       const { data } = await supabase.from('store_settings').select('key, value');
       if (data) {
         data.forEach((item) => {
-          if (item.key === 'store_name' && item.value) {
+          if (item.key === 'store_name') {
             setStoreName(item.value);
           }
-          if (item.key === 'live_stream_text' && item.value) {
+          if (item.key === 'live_stream_text') {
             setLiveStreamText(item.value);
           }
         });
@@ -119,6 +169,7 @@ export default function Home() {
     }
   }, []);
 
+  // جلب المنتجات المعروضة فقط
   const fetchProducts = useCallback(async () => {
     const { data: prods, error: prodErr } = await supabase
       .from('products')
@@ -166,6 +217,19 @@ export default function Home() {
     fullProducts.sort((a, b) => (b.sales_count || 0) - (a.sales_count || 0));
     setProducts(fullProducts as Product[]);
     setFetching(false);
+
+    try {
+      const validIds = new Set(fullProducts.map((p) => String(p.id)));
+      setFavorites((prev) => {
+        const cleaned = prev.filter((id) => validIds.has(id));
+        if (cleaned.length !== prev.length) {
+          localStorage.setItem('customer_favorites', JSON.stringify(cleaned));
+        }
+        return cleaned;
+      });
+    } catch (e) {
+      console.warn('Cleanup error:', e);
+    }
   }, []);
 
   useEffect(() => {
@@ -195,7 +259,7 @@ export default function Home() {
 
   const discountProducts = useMemo(() => {
     return products.filter(
-      (p) => p.original_price && Number(p.original_price) > Number(p.price)
+      (p) => isProductInStock(p) && p.original_price && Number(p.original_price) > Number(p.price)
     );
   }, [products]);
 
@@ -224,11 +288,24 @@ export default function Home() {
     return list;
   }, [products, searchQuery, activeCategory]);
 
+  const favoriteProducts = useMemo(() => {
+    return products.filter((p) => favorites.includes(String(p.id)));
+  }, [products, favorites]);
+
+  // إضافة للسلة مع تقييد المخزون الدقيق
   const addToCart = (product: Product, variant: Variant | null, e?: React.MouseEvent) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
+
+    const availableStock = variant ? (variant.stock_quantity || 0) : 9999;
+    if (availableStock <= 0) {
+      alert('عذراً، هذا الخيار نفد بالكامل من المخزن');
+      return;
+    }
+
+    let limitReached = false;
 
     setCart((prevCart) => {
       const existingIndex = prevCart.findIndex((item) => {
@@ -238,16 +315,26 @@ export default function Home() {
       });
 
       if (existingIndex > -1) {
+        const currentQty = prevCart[existingIndex].quantity;
+        if (currentQty >= availableStock) {
+          limitReached = true;
+          return prevCart;
+        }
         const updated = [...prevCart];
         updated[existingIndex] = {
           ...updated[existingIndex],
-          quantity: updated[existingIndex].quantity + 1,
+          quantity: currentQty + 1,
         };
         return updated;
       }
 
       return [...prevCart, { product, variant, quantity: 1 }];
     });
+
+    if (limitReached) {
+      alert(`عذراً، الكمية المتوفرة بالمخزن من (${variant?.color || 'المنتج'}) هي ${availableStock} قطع فقط.`);
+      return;
+    }
 
     setCartToast(`تمت إضافة "${product.title}" إلى السلة`);
     setTimeout(() => {
@@ -259,7 +346,18 @@ export default function Home() {
     setCart((prev) => prev.filter((_, i) => i !== index));
   };
 
+  // التحكم بالكمية في السلة مع منع تجاوز المخزون المتوفر
   const updateCartQuantity = (index: number, delta: number) => {
+    const item = cart[index];
+    if (!item) return;
+
+    const maxStock = item.variant ? (item.variant.stock_quantity || 0) : 9999;
+
+    if (delta > 0 && item.quantity >= maxStock) {
+      alert(`عذراً، لا يمكنك إضافة أكثر من ${maxStock} قطع من خيار (${item.variant?.color || 'هذا المنتج'}). هذا هو الحد الأقصى المتوفر بالمخزن.`);
+      return;
+    }
+
     setCart((prev) => {
       const updated = [...prev];
       const newQty = updated[index].quantity + delta;
@@ -275,7 +373,9 @@ export default function Home() {
 
   const handleOpenProduct = (product: Product) => {
     setSelectedProduct(product);
-    setSelectedVariant(product.product_variants?.[0] || null);
+    // اختيار أول خيار متوفر بالمخزن تلقائياً
+    const firstInStockVariant = product.product_variants?.find((v) => (v.stock_quantity || 0) > 0);
+    setSelectedVariant(firstInStockVariant || product.product_variants?.[0] || null);
     setStep('details');
   };
 
@@ -285,7 +385,6 @@ export default function Home() {
     setStep('details');
     setNotes('');
 
-    // إذا لم تكن البيانات مخزنة مسبقاً في المتصفح يتم تصفيرها
     const saved = typeof window !== 'undefined' ? localStorage.getItem('customer_delivery_info') : null;
     if (!saved) {
       setName('');
@@ -296,7 +395,6 @@ export default function Home() {
     }
   };
 
-// نظام فحص دقة الموقع ومنع قراءات الـ IP الخاطئة
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
       alert('متصفحك لا يدعم خاصية تحديد الموقع.');
@@ -304,57 +402,38 @@ export default function Home() {
     }
 
     setMapsLink('loading');
-    setLocationStatus('جاري البحث عن إشارة دقيقة (GPS / Wi-Fi)...');
+    setLocationStatus('جاري الاتصال بالأقمار الصناعية لتحديد موقعك...');
 
-    let watchId: number;
-    let foundAccurate = false;
-
-    // مهلة زمنية: إذا لم يجد دقة حقيقية خلال 7 ثوانٍ
-    const timer = setTimeout(() => {
-      if (watchId) navigator.geolocation.clearWatch(watchId);
-
-      if (!foundAccurate) {
-        setMapsLink('');
-        setLocationStatus('تعذر التقاط إشارة GPS دقيقة (جهاز بدون GPS).');
-        alert(
-          'تنبيه: لم يتم التقاط إشارة GPS دقيقة من جهازك (غالباً بسبب استخدام حاسوب بدون شريحة موقع).\n\nحرصاً على وصول الطلب للمكان الصحيح، يرجى كتابة العنوان التفصيلي وأقرب نقطة دالة يدوياً، أو استخدام الهاتف المحمول لتحديد الإحداثيات بدقة.'
-        );
-      }
-    }, 7000);
-
-    watchId = navigator.geolocation.watchPosition(
+    navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude, accuracy } = position.coords;
+        const url = `https://www.google.com/maps?q=${latitude},${longitude}`;
+        setMapsLink(url);
 
-        // فحص الدقة: إذا كانت الدقة أفضل من 250 متر فهذا مسح حقيقي وليس IP عشوائي
-        if (accuracy <= 250) {
-          foundAccurate = true;
-          clearTimeout(timer);
-          navigator.geolocation.clearWatch(watchId);
-
-          const url = `https://www.google.com/maps?q=${latitude},${longitude}`;
-          setMapsLink(url);
-          setLocationStatus(`✓ تم التقاط موقعك الفعلي بدقة (هامش خطأ: ${Math.round(accuracy)} متر)`);
+        if (accuracy > 150) {
+          setLocationStatus(`تم تحديد الموقع تقريبياً (دقة: ${Math.round(accuracy)} م) - يرجى كتابة العنوان بدقة`);
+          alert('تنبيه: يبدو أنك تستخدم حاسوباً بدون GPS أو شبكة إنترنت تقريبية. تم التقاط موقع تقريبي، لذا يرجى التأكد من كتابة العنوان التفصيلي في الحقل المخصص.');
+        } else {
+          setLocationStatus(`تم التقاط موقعك الدقيق بنجاح (دقة: ${Math.round(accuracy)} متر)`);
         }
       },
       (error) => {
-        clearTimeout(timer);
-        if (watchId) navigator.geolocation.clearWatch(watchId);
         setMapsLink('');
         setLocationStatus('');
         if (error.code === error.PERMISSION_DENIED) {
-          alert('يرجى السماح بصلاحية الموقع في المتصفح لتحديد مكان التوصيل.');
+          alert('يرجى السماح بصلاحية الوصول للموقع الجغرافي من إعدادات المتصفح.');
         } else {
-          alert('تعذر الوصول لخدمة الموقع، يرجى كتابة العنوان يدوياً.');
+          alert('تعذر جلب إحداثيات دقيقة، يرجى كتابة العنوان يدوياً.');
         }
       },
       {
         enableHighAccuracy: true,
-        timeout: 10000,
+        timeout: 15000,
         maximumAge: 0,
       }
     );
   };
+
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -372,9 +451,20 @@ export default function Home() {
       return;
     }
 
+    // تدقيق نهائي للمخزون قبل إرسال الطلب لقاعدة البيانات
+    for (const item of itemsToOrder) {
+      if (item.variant) {
+        const maxAvailable = item.variant.stock_quantity || 0;
+        if (item.quantity > maxAvailable) {
+          alert(`خطأ: الكمية المطلوبة من (${item.product.title} - ${item.variant.color}) هي ${item.quantity} ولكن المتبقي بالمخزن ${maxAvailable} فقط. يرجى تقليل الكمية.`);
+          setLoading(false);
+          return;
+        }
+      }
+    }
+
     const totalAmount = currentProduct ? currentProduct.price : cartTotal;
 
-    // 1. حفظ الطلب في قاعدة بيانات Supabase
     const { data: orderData, error: orderError } = await supabase
       .from('orders')
       .insert([
@@ -406,7 +496,7 @@ export default function Home() {
 
     await supabase.from('order_items').insert(orderItemsInserts);
 
-    // تحديث المخزون
+    // خصم الكميات الفعلية من المخزن
     for (const item of itemsToOrder) {
       if (item.variant?.id) {
         const newStock = Math.max(0, (item.variant.stock_quantity || 0) - item.quantity);
@@ -417,7 +507,6 @@ export default function Home() {
       }
     }
 
-    // حفظ معلومات الزبون في localStorage للمرات القادمة
     try {
       localStorage.setItem(
         'customer_delivery_info',
@@ -432,7 +521,6 @@ export default function Home() {
       console.warn('Failed to save customer delivery info:', storageErr);
     }
 
-    // 2. تجميع روابط الصور المباشرة
     try {
       const imagesList: string[] = [];
 
@@ -457,7 +545,6 @@ export default function Home() {
         price: i.product.price,
       }));
 
-      // إرسال الإشعار لتيليجرام
       await fetch('/api/telegram-notify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -488,10 +575,10 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 selection:bg-rose-500 selection:text-white font-sans antialiased" dir="rtl">
       
-      {/* شريط الإشعار العلوي للتوست */}
+      {/* شريط الإشعار الموحد مع لوحة المدير */}
       {cartToast && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-zinc-900 text-white px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2.5 border border-white/10 text-xs font-bold animate-in fade-in slide-in-from-top duration-200">
-          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           <span>{cartToast}</span>
         </div>
       )}
@@ -504,7 +591,7 @@ export default function Home() {
             <span>{liveStreamText}</span>
           </div>
           <div className="hidden sm:flex items-center gap-4 text-zinc-400 font-medium">
-            <span>التوصيل متاح داخل محافضه ديالى</span>
+            <span>التوصيل متاح داخل محافظة ديالى</span>
             <span>الدفع عند الاستلام</span>
           </div>
         </div>
@@ -514,14 +601,12 @@ export default function Home() {
       <header className="sticky top-0 bg-white/95 backdrop-blur-md z-30 border-b border-zinc-200/80">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-18 flex items-center justify-between gap-4">
           
-          {/* اسم المتجر النصي فقط */}
           <div className="flex items-center">
             <span className="text-xl sm:text-2xl font-black text-zinc-950 tracking-tight">
               {storeName}
             </span>
           </div>
 
-          {/* شريط البحث المركزي */}
           <div className="flex-1 max-w-md hidden md:block">
             <div className="relative flex items-center">
               <input
@@ -547,12 +632,34 @@ export default function Home() {
             </div>
           </div>
 
-          {/* أيقونة السلة */}
-          <div className="flex items-center">
+          <div className="flex items-center gap-1 sm:gap-2">
+            <button
+              onClick={() => setIsFavoritesOpen(true)}
+              className="relative p-2 text-zinc-800 hover:text-rose-600 transition active:scale-95"
+              aria-label="المنتجات المفضلة"
+              title="المنتجات التي أحببتها"
+            >
+              <svg 
+                className={`w-6 h-6 transition-colors ${favoriteProducts.length > 0 ? 'text-rose-600 fill-rose-600' : 'text-zinc-800'}`} 
+                fill="none" 
+                viewBox="0 0 24 24" 
+                stroke="currentColor" 
+                strokeWidth={1.8}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+              </svg>
+              {favoriteProducts.length > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 bg-rose-600 text-white text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center ring-2 ring-white animate-in zoom-in duration-200">
+                  {favoriteProducts.length}
+                </span>
+              )}
+            </button>
+
             <button
               onClick={() => setIsCartOpen(true)}
               className="relative p-2 text-zinc-800 hover:text-black transition active:scale-95"
               aria-label="سلة المشتريات"
+              title="سلة التسوق"
             >
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
@@ -572,7 +679,6 @@ export default function Home() {
       {/* المحتوى الرئيسي */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10 space-y-8 sm:space-y-12">
         
-        {/* البانر الترويجي التفاعلي للخصومات */}
         {discountProducts.length > 0 ? (
           <section className="relative overflow-hidden rounded-[32px] bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-800 text-white p-6 sm:p-12 shadow-2xl">
             {discountProducts.map((product, idx) => {
@@ -626,21 +732,20 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="w-56 h-56 sm:w-80 sm:h-80 rounded-3xl overflow-hidden shadow-2xl bg-zinc-800/50 p-2 border border-white/10 shrink-0">
+                  <div className="w-56 h-56 sm:w-80 sm:h-80 rounded-3xl overflow-hidden shadow-2xl bg-zinc-800/50 border border-white/10 shrink-0">
                     <img
                       src={bannerImg}
                       alt={product.title}
                       onError={(e) => {
                         (e.target as HTMLImageElement).src = 'https://placehold.co/600x600?text=Product';
                       }}
-                      className="w-full h-full object-cover rounded-2xl"
+                      className="w-full h-full object-cover object-center rounded-3xl"
                     />
                   </div>
                 </div>
               );
             })}
 
-            {/* أزرار ونقاط التنقل في البانر */}
             {discountProducts.length > 1 && (
               <div className="relative z-10 flex items-center justify-between mt-8 pt-4 border-t border-white/10">
                 <div className="flex items-center gap-1.5">
@@ -692,7 +797,7 @@ export default function Home() {
               <img
                 src={products[0]?.product_images?.[0]?.image_url || 'https://placehold.co/600x600'}
                 alt=""
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover object-center"
               />
             </div>
           </section>
@@ -765,13 +870,13 @@ export default function Home() {
           </div>
         </section>
 
-        {/* شبكة المنتجات (عمودين على الهاتف) */}
+        {/* شبكة المنتجات */}
         <section>
           {fetching ? (
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
               {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                <div key={n} className="bg-white rounded-3xl h-72 sm:h-80 border border-zinc-200/60 animate-pulse p-3 sm:p-4 space-y-3">
-                  <div className="bg-zinc-100 rounded-2xl h-36 sm:h-44 w-full" />
+                <div key={n} className="bg-white rounded-3xl h-80 sm:h-96 border border-zinc-200/60 animate-pulse p-3 sm:p-4 space-y-3">
+                  <div className="bg-zinc-100 rounded-2xl aspect-[4/5] w-full" />
                   <div className="h-3.5 bg-zinc-100 rounded-md w-3/4" />
                   <div className="h-3.5 bg-zinc-100 rounded-md w-1/2" />
                 </div>
@@ -786,48 +891,65 @@ export default function Home() {
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
               {filteredProducts.map((p) => {
                 const rawImg = p.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim();
-                const img = rawImg && rawImg.startsWith('http') ? rawImg : 'https://placehold.co/400x400?text=Product';
+                const img = rawImg && rawImg.startsWith('http') ? rawImg : 'https://placehold.co/400x500?text=Product';
                 const hasDiscount = Boolean(p.original_price && Number(p.original_price) > Number(p.price));
+                const isFav = favorites.includes(String(p.id));
+                const inStock = isProductInStock(p);
 
                 return (
                   <div
                     key={p.id}
-                    className="bg-white border border-zinc-200/80 rounded-2xl sm:rounded-3xl p-2.5 sm:p-4 flex flex-col justify-between hover:border-zinc-300 hover:shadow-xl transition-all duration-300 group"
+                    className="bg-white border border-zinc-200/80 rounded-2xl sm:rounded-3xl p-2.5 sm:p-3.5 flex flex-col justify-between hover:border-zinc-300 hover:shadow-xl transition-all duration-300 group relative"
                   >
                     <div>
                       {/* حاوية صورة المنتج */}
                       <div 
                         onClick={() => handleOpenProduct(p)}
-                        className="relative aspect-square rounded-xl sm:rounded-2xl bg-[#F8F9FA] overflow-hidden flex items-center justify-center mb-2.5 sm:mb-4 cursor-pointer"
+                        className="relative aspect-[4/5] rounded-xl sm:rounded-2xl bg-zinc-100 overflow-hidden mb-2.5 sm:mb-4 cursor-pointer border border-zinc-200/60"
                       >
                         <img
                           src={img}
                           alt={p.title}
                           onError={(e) => {
-                            (e.target as HTMLImageElement).src = 'https://placehold.co/400x400?text=No+Image';
+                            (e.target as HTMLImageElement).src = 'https://placehold.co/400x500?text=No+Image';
                           }}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                          className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-500"
                         />
-                        {hasDiscount && (
+
+                        {/* شارة الخصم */}
+                        {hasDiscount && inStock && (
                           <span className="absolute top-2 right-2 sm:top-3 sm:right-3 bg-rose-600 text-white text-[9px] sm:text-[10px] font-black px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-lg sm:rounded-xl shadow-xs">
                             خصم
                           </span>
                         )}
+
+                        {/* أيقونة أحببته */}
+                        <button
+                          type="button"
+                          onClick={(e) => toggleFavorite(p.id, e)}
+                          className="absolute top-2 left-2 sm:top-3 sm:left-3 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm flex items-center justify-center shadow-md hover:scale-110 active:scale-90 transition z-10"
+                          title={isFav ? 'إزالة من المفضلة' : 'أحببته'}
+                        >
+                          <svg
+                            className={`w-4 h-4 transition-colors ${isFav ? 'text-rose-600 fill-rose-600' : 'text-zinc-600 hover:text-rose-600'}`}
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2}
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                          </svg>
+                        </button>
                       </div>
 
                       {/* عنوان وتفاصيل المنتج */}
                       <div className="space-y-0.5 sm:space-y-1">
-                        <div className="flex items-center justify-between">
-                          <h4 
-                            onClick={() => handleOpenProduct(p)}
-                            className="font-black text-xs sm:text-sm text-zinc-900 line-clamp-1 hover:text-rose-600 transition cursor-pointer"
-                          >
-                            {p.title}
-                          </h4>
-                          <span className="text-[9px] sm:text-[10px] font-bold text-zinc-400 bg-zinc-100 px-1.5 py-0.5 rounded shrink-0">
-                            متوفر
-                          </span>
-                        </div>
+                        <h4 
+                          onClick={() => handleOpenProduct(p)}
+                          className="font-black text-xs sm:text-sm text-zinc-900 line-clamp-1 hover:text-rose-600 transition cursor-pointer"
+                        >
+                          {p.title}
+                        </h4>
                         <p className="text-[10px] sm:text-xs text-zinc-400 line-clamp-1">{p.description}</p>
                       </div>
 
@@ -854,20 +976,23 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* أزرار الإجراءات */}
-                    <div className="grid grid-cols-2 gap-1.5 sm:gap-2 pt-2 border-t border-zinc-100">
-                      <button
-                        onClick={() => handleOpenProduct(p)}
-                        className="w-full bg-zinc-950 hover:bg-zinc-800 text-white text-[10px] sm:text-xs font-black py-2 sm:py-2.5 rounded-lg sm:rounded-xl transition active:scale-95 shadow-xs"
-                      >
-                        طلب الآن
-                      </button>
-                      <button
-                        onClick={(e) => addToCart(p, p.product_variants?.[0] || null, e)}
-                        className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-900 text-[10px] sm:text-xs font-bold py-2 sm:py-2.5 rounded-lg sm:rounded-xl transition active:scale-95"
-                      >
-                        + السلة
-                      </button>
+                    {/* زر الإجراء */}
+                    <div className="pt-2 border-t border-zinc-100">
+                      {inStock ? (
+                        <button
+                          onClick={() => handleOpenProduct(p)}
+                          className="w-full bg-zinc-950 hover:bg-zinc-800 text-white text-xs font-black py-2.5 sm:py-3 rounded-xl transition active:scale-95 shadow-xs"
+                        >
+                          طلب الآن
+                        </button>
+                      ) : (
+                        <button
+                          disabled
+                          className="w-full bg-zinc-100 text-zinc-400 text-xs font-bold py-2.5 sm:py-3 rounded-xl cursor-not-allowed border border-zinc-200"
+                        >
+                          غير متوفر حالياً
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -877,6 +1002,94 @@ export default function Home() {
         </section>
 
       </main>
+
+      {/* قائمة المنتجات المفضلة الجانبية */}
+      {isFavoritesOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex justify-end">
+          <div className="bg-white w-full max-w-md h-full p-6 flex flex-col justify-between shadow-2xl animate-in slide-in-from-left duration-300 text-right">
+            <div>
+              <div className="flex items-center justify-between border-b border-zinc-100 pb-4 mb-4">
+                <h3 className="text-lg font-black text-zinc-900 flex items-center gap-2">
+                  <span>المنتجات التي أحببتها</span>
+                  <span className="text-xs bg-rose-50 text-rose-600 px-2.5 py-0.5 rounded-full font-bold">
+                    {favoriteProducts.length} منتج
+                  </span>
+                </h3>
+                <button
+                  onClick={() => setIsFavoritesOpen(false)}
+                  className="text-zinc-400 hover:text-zinc-900 p-2 text-base font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {favoriteProducts.length === 0 ? (
+                <div className="text-center py-20 text-zinc-400 space-y-2">
+                  <p className="text-xs font-bold">لم تقم بإضافة أي منتجات للمفضلة بعد</p>
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[70vh] overflow-y-auto no-scrollbar">
+                  {favoriteProducts.map((item) => {
+                    const inStock = isProductInStock(item);
+                    return (
+                      <div
+                        key={item.id}
+                        className="bg-zinc-50 p-3 rounded-2xl flex items-center justify-between border border-zinc-100 text-xs"
+                      >
+                        <div 
+                          onClick={() => {
+                            setIsFavoritesOpen(false);
+                            handleOpenProduct(item);
+                          }}
+                          className="flex items-center gap-3 cursor-pointer flex-1"
+                        >
+                          <img
+                            src={item.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim()}
+                            className="w-14 h-14 object-cover object-top rounded-xl bg-white border border-zinc-200 shrink-0"
+                            alt=""
+                          />
+                          <div>
+                            <h4 className="font-black text-zinc-900 line-clamp-1">{item.title}</h4>
+                            <p className="text-[10px] text-zinc-400 line-clamp-1">{item.description}</p>
+                            <span className="font-black text-zinc-900 block mt-0.5">${item.price}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {inStock ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsFavoritesOpen(false);
+                                handleOpenProduct(item);
+                              }}
+                              className="bg-zinc-950 text-white px-3 py-1.5 rounded-xl font-bold text-[11px] hover:bg-zinc-800 transition"
+                            >
+                              طلب الآن
+                            </button>
+                          ) : (
+                            <span className="text-[10px] font-bold text-zinc-400 bg-zinc-200 px-2 py-1 rounded-lg">
+                              غير متوفر حالياً
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => toggleFavorite(item.id)}
+                            className="text-zinc-400 hover:text-rose-600 font-bold p-1 transition"
+                            title="حذف من المفضلة"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* سلة المشتريات الجانبية */}
       {isCartOpen && (
@@ -904,57 +1117,66 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="space-y-3 max-h-[60vh] overflow-y-auto no-scrollbar">
-                  {cart.map((item, index) => (
-                    <div
-                      key={index}
-                      className="bg-zinc-50 p-3 rounded-2xl flex items-center justify-between border border-zinc-100 text-xs"
-                    >
-                      <div className="flex items-center gap-3">
-                        <img
-                          src={item.product.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim()}
-                          className="w-12 h-12 object-cover rounded-xl bg-white border border-zinc-200"
-                          alt=""
-                        />
-                        <div>
-                          <h4 className="font-black text-zinc-900 line-clamp-1">{item.product.title}</h4>
-                          <span className="text-[10px] text-zinc-400">
-                            {item.variant ? item.variant.color : 'افتراضي'}
-                          </span>
-                          <span className="font-black text-zinc-900 block mt-0.5">${item.product.price * item.quantity}</span>
-                        </div>
-                      </div>
+                  {cart.map((item, index) => {
+                    const maxStock = item.variant ? (item.variant.stock_quantity || 0) : 9999;
+                    const isAtMaxStock = item.quantity >= maxStock;
 
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex items-center gap-1.5 bg-white p-1 rounded-full border border-zinc-200 shadow-2xs">
+                    return (
+                      <div
+                        key={index}
+                        className="bg-zinc-50 p-3 rounded-2xl flex items-center justify-between border border-zinc-100 text-xs"
+                      >
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={item.product.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim()}
+                            className="w-14 h-14 object-cover object-top rounded-xl bg-white border border-zinc-200"
+                            alt=""
+                          />
+                          <div>
+                            <h4 className="font-black text-zinc-900 line-clamp-1">{item.product.title}</h4>
+                            <span className="text-[10px] text-zinc-400 block">
+                              {item.variant ? item.variant.color : 'افتراضي'} (المتوفر: {maxStock})
+                            </span>
+                            <span className="font-black text-zinc-900 block mt-0.5">${item.product.price * item.quantity}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex items-center gap-1.5 bg-white p-1 rounded-full border border-zinc-200 shadow-2xs">
+                            <button
+                              type="button"
+                              onClick={() => updateCartQuantity(index, -1)}
+                              className="w-7 h-7 rounded-full bg-zinc-100 hover:bg-zinc-200 text-zinc-800 flex items-center justify-center font-black transition active:scale-90 text-xs"
+                              title="تقليل الكمية"
+                            >
+                              -
+                            </button>
+                            <span className="px-1 text-xs font-black min-w-4 text-center">{item.quantity}</span>
+                            <button
+                              type="button"
+                              onClick={() => updateCartQuantity(index, 1)}
+                              className={`w-7 h-7 rounded-full flex items-center justify-center font-black transition text-xs ${
+                                isAtMaxStock
+                                  ? 'bg-zinc-100 text-zinc-300 cursor-not-allowed'
+                                  : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 active:scale-90'
+                              }`}
+                              title={isAtMaxStock ? 'وصلت للحد الأقصى المتوفر' : 'زيادة الكمية'}
+                            >
+                              +
+                            </button>
+                          </div>
                           <button
                             type="button"
-                            onClick={() => updateCartQuantity(index, -1)}
-                            className="w-7 h-7 rounded-full bg-zinc-100 hover:bg-zinc-200 text-zinc-800 flex items-center justify-center font-black transition active:scale-90 text-xs"
-                            title="تقليل الكمية"
+                            onClick={() => removeFromCart(index)}
+                            className="text-zinc-400 hover:text-rose-600 font-bold p-1 transition"
+                            title="حذف"
                           >
-                            -
-                          </button>
-                          <span className="px-1 text-xs font-black min-w-4 text-center">{item.quantity}</span>
-                          <button
-                            type="button"
-                            onClick={() => updateCartQuantity(index, 1)}
-                            className="w-7 h-7 rounded-full bg-zinc-100 hover:bg-zinc-200 text-zinc-800 flex items-center justify-center font-black transition active:scale-90 text-xs"
-                            title="زيادة الكمية"
-                          >
-                            +
+                            ✕
                           </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => removeFromCart(index)}
-                          className="text-zinc-400 hover:text-rose-600 font-bold p-1 transition"
-                          title="حذف"
-                        >
-                          ✕
-                        </button>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1001,11 +1223,11 @@ export default function Home() {
             {/* خطوة تفاصيل المنتج */}
             {step === 'details' && selectedProduct && (
               <div className="space-y-5">
-                <div className="relative aspect-video rounded-2xl bg-zinc-50 overflow-hidden border border-zinc-100">
+                <div className="relative aspect-[4/5] max-h-[340px] sm:max-h-[380px] w-full rounded-2xl bg-zinc-100 overflow-hidden border border-zinc-200/80 mx-auto">
                   <img
                     src={selectedProduct.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim()}
                     alt={selectedProduct.title}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover object-top"
                   />
                 </div>
 
@@ -1025,6 +1247,8 @@ export default function Home() {
                     <div className="flex flex-wrap gap-2">
                       {selectedProduct.product_variants.map((v) => {
                         const isSelected = selectedVariant?.id === v.id;
+                        const vInStock = (v.stock_quantity || 0) > 0;
+
                         return (
                           <button
                             key={v.id}
@@ -1034,13 +1258,16 @@ export default function Home() {
                               isSelected
                                 ? 'border-zinc-950 bg-zinc-950 text-white shadow-xs'
                                 : 'border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-zinc-400'
-                            }`}
+                            } ${!vInStock ? 'opacity-40' : ''}`}
                           >
                             <span
                               style={{ backgroundColor: getColorHex(v.color) }}
                               className="w-2.5 h-2.5 rounded-full border border-white"
                             />
                             <span>{v.color}</span>
+                            <span className={`text-[10px] ${isSelected ? 'text-zinc-300' : 'text-zinc-400'}`}>
+                              ({vInStock ? v.stock_quantity : 'نفد'})
+                            </span>
                           </button>
                         );
                       })}
@@ -1049,20 +1276,31 @@ export default function Home() {
                 )}
 
                 <div className="grid grid-cols-2 gap-3 pt-3">
-                  <button
-                    type="button"
-                    onClick={(e) => addToCart(selectedProduct, selectedVariant, e)}
-                    className="bg-zinc-100 hover:bg-zinc-200 text-zinc-900 text-xs font-black py-3.5 rounded-xl transition"
-                  >
-                    + إضافة للسلة
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStep('checkout')}
-                    className="bg-zinc-950 hover:bg-black text-white text-xs font-black py-3.5 rounded-xl transition shadow-md active:scale-95"
-                  >
-                    طلب الآن
-                  </button>
+                  {isProductInStock(selectedProduct) && (!selectedVariant || (selectedVariant.stock_quantity || 0) > 0) ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={(e) => addToCart(selectedProduct, selectedVariant, e)}
+                        className="bg-zinc-100 hover:bg-zinc-200 text-zinc-900 text-xs font-black py-3.5 rounded-xl transition active:scale-95"
+                      >
+                        + إضافة للسلة
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStep('checkout')}
+                        className="bg-zinc-950 hover:bg-black text-white text-xs font-black py-3.5 rounded-xl transition shadow-md active:scale-95"
+                      >
+                        طلب الآن
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      disabled
+                      className="col-span-2 bg-zinc-100 text-zinc-400 text-xs font-bold py-3.5 rounded-xl border border-zinc-200 cursor-not-allowed"
+                    >
+                      هذا الخيار غير متوفر حالياً
+                    </button>
+                  )}
                 </div>
               </div>
             )}
