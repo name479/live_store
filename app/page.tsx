@@ -82,6 +82,7 @@ export default function Home() {
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
   const [mapsLink, setMapsLink] = useState('');
+  const [locationStatus, setLocationStatus] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
   const fetchSettings = useCallback(async () => {
@@ -271,27 +272,48 @@ export default function Home() {
     setAddress('');
     setNotes('');
     setMapsLink('');
+    setLocationStatus('');
   };
 
+// نظام ذكي لفحص دقة الموقع والتنبيه عند استخدام الحاسوب
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
-      alert('متصفحك لا يدعم تحديد الموقع الجغرافي.');
+      alert('متصفحك لا يدعم خاصية تحديد الموقع.');
       return;
     }
 
     setMapsLink('loading');
+    setLocationStatus('جاري الاتصال بالأقمار الصناعية لتحديد موقعك...');
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        const { latitude, longitude } = position.coords;
-        setMapsLink(`https://www.google.com/maps?q=${latitude},${longitude}`);
-        alert('تم تحديد موقعك بدقة بنجاح');
+        const { latitude, longitude, accuracy } = position.coords;
+        const url = `https://www.google.com/maps?q=${latitude},${longitude}`;
+        setMapsLink(url);
+
+        // إذا كانت دقة الإشارة ضعيفة (أكثر من 150 متر - حالة الحواسيب عادة)
+        if (accuracy > 150) {
+          setLocationStatus(`تم تحديد الموقع تقريبياً (دقة: ${Math.round(accuracy)} م) - يرجى كتابة العنوان بدقة`);
+          alert('تنبيه: يبدو أنك تستخدم حاسوباً بدون GPS أو شبكة إنترنت تقريبية. تم التقاط موقع تقريبي، لذا يرجى التأكد من كتابة العنوان التفصيلي في الحقل المخصص.');
+        } else {
+          // حالة الهواتف ذات إشارة GPS الدقيقة
+          setLocationStatus(`تم التقاط موقعك الدقيق بنجاح (دقة: ${Math.round(accuracy)} متر)`);
+        }
       },
-      () => {
+      (error) => {
         setMapsLink('');
-        alert('تعذر الوصول للموقع، يرجى كتابة العنوان يدوياً.');
+        setLocationStatus('');
+        if (error.code === error.PERMISSION_DENIED) {
+          alert('يرجى السماح بصلاحية الوصول للموقع الجغرافي من إعدادات المتصفح.');
+        } else {
+          alert('تعذر جلب إحداثيات دقيقة، يرجى كتابة العنوان يدوياً.');
+        }
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      }
     );
   };
 
@@ -314,6 +336,7 @@ export default function Home() {
 
     const totalAmount = currentProduct ? currentProduct.price : cartTotal;
 
+    // 1. حفظ الطلب في قاعدة بيانات Supabase
     const { data: orderData, error: orderError } = await supabase
       .from('orders')
       .insert([
@@ -345,6 +368,7 @@ export default function Home() {
 
     await supabase.from('order_items').insert(orderItemsInserts);
 
+    // تحديث المخزون
     for (const item of itemsToOrder) {
       if (item.variant?.id) {
         const newStock = Math.max(0, (item.variant.stock_quantity || 0) - item.quantity);
@@ -355,8 +379,25 @@ export default function Home() {
       }
     }
 
+    // 2. تجميع روابط الصور المباشرة (حل مشكلة الصور نهائياً)
     try {
-      const rawImage = itemsToOrder[0]?.product?.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim() || '';
+      const imagesList: string[] = [];
+
+      for (const item of itemsToOrder) {
+        let rawUrl = item.product?.product_images?.[0]?.image_url?.replace(/^["']+|["']+$/g, '').trim() || '';
+        
+        if (rawUrl) {
+          // إذا كانت الصورة مخزنة كمسار داخل Bucket منتجات Supabase
+          if (!rawUrl.startsWith('http')) {
+            const { data: pubData } = supabase.storage.from('products').getPublicUrl(rawUrl);
+            if (pubData?.publicUrl) rawUrl = pubData.publicUrl;
+          }
+          if (rawUrl.startsWith('http') && !imagesList.includes(rawUrl)) {
+            imagesList.push(rawUrl);
+          }
+        }
+      }
+
       const itemsPayload = itemsToOrder.map((i) => ({
         title: i.product.title,
         variant: i.variant ? `${i.variant.color} (${i.variant.size})` : 'افتراضي',
@@ -364,7 +405,8 @@ export default function Home() {
         price: i.product.price,
       }));
 
-      await fetch('/api/send-order', {
+      // إرسال الإشعار لتيليجرام
+      await fetch('/api/telegram-notify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -375,11 +417,11 @@ export default function Home() {
           notes: notes || null,
           totalAmount: totalAmount,
           items: itemsPayload,
-          imageUrl: rawImage,
+          imageUrls: imagesList,
         }),
       });
     } catch (err) {
-      console.error('Notification error:', err);
+      console.error('Telegram notification error:', err);
     }
 
     if (!currentProduct) {
@@ -671,7 +713,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* شبكة المنتجات (عمودين على الهاتف grid-cols-2) */}
+        {/* شبكة المنتجات (عمودين على الهاتف) */}
         <section>
           {fetching ? (
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
@@ -1027,20 +1069,25 @@ export default function Home() {
                     type="button"
                     onClick={handleGetLocation}
                     disabled={mapsLink === 'loading'}
-                    className={`w-full py-3 rounded-xl text-xs font-bold border transition ${
+                    className={`w-full py-3.5 rounded-xl text-xs font-bold border transition ${
                       mapsLink && mapsLink !== 'loading'
-                        ? 'bg-zinc-950 text-white border-zinc-950'
+                        ? 'bg-zinc-950 text-white border-zinc-950 shadow-xs'
                         : mapsLink === 'loading'
-                        ? 'bg-zinc-200 text-zinc-500 border-zinc-300'
-                        : 'bg-zinc-50 text-zinc-700 border-zinc-200 hover:bg-zinc-100'
+                        ? 'bg-zinc-200 text-zinc-500 border-zinc-300 animate-pulse'
+                        : 'bg-zinc-50 text-zinc-800 border-zinc-200 hover:bg-zinc-100'
                     }`}
                   >
                     {mapsLink === 'loading'
-                      ? 'جاري تحديد موقعك...'
+                      ? 'جاري التقاط إشارة GPS عالية الدقة...'
                       : mapsLink
-                      ? '✓ تم تحديد موقعك على الخريطة'
-                      : 'مشاركة موقعي الجغرافي (GPS)'}
+                      ? '✓ تم التقاط موقعك الجغرافي الدقيق'
+                      : 'مشاركة موقعي الجغرافي الدقيق (GPS)'}
                   </button>
+                  {locationStatus && (
+                    <p className="text-[10px] font-bold text-zinc-500 mt-1 text-center">
+                      {locationStatus}
+                    </p>
+                  )}
                 </div>
 
                 <div>
