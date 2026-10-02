@@ -59,8 +59,8 @@ export default function AdminDashboard() {
   const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState(false);
 
-  // التبويبات الأربعة
-  const [activeTab, setActiveTab] = useState<'orders' | 'products' | 'add_product' | 'settings'>('orders');
+  // التبويبات
+  const [activeTab, setActiveTab] = useState<'orders' | 'products' | 'quick_sale' | 'add_product' | 'settings'>('orders');
 
   // حالات فتح وإغلاق القوائم المنسدلة
   const [openManualAdd, setOpenManualAdd] = useState(false);
@@ -72,7 +72,7 @@ export default function AdminDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
   
-  // شريط الإشعار الموحد (مطابق لواجهة الزبائن تماماً)
+  // شريط الإشعار الموحد
   const [adminToast, setAdminToast] = useState<string | null>(null);
   
   // شريط البحث
@@ -128,6 +128,15 @@ export default function AdminDashboard() {
   const [submittingProduct, setSubmittingProduct] = useState(false);
   const [excelFileName, setExcelFileName] = useState<string | null>(null);
   const [isImportingExcel, setIsImportingExcel] = useState(false);
+
+  // ----------------- حالات البيع السريع -----------------
+  const [posCustomerName, setPosCustomerName] = useState('');
+  const [posCustomerPhone, setPosCustomerPhone] = useState('');
+  const [posAddress, setPosAddress] = useState('');
+  const [posNotes, setPosNotes] = useState('');
+  const [posCart, setPosCart] = useState<{ product: Product; variant: Variant | null; quantity: number }[]>([]);
+  const [submittingPosOrder, setSubmittingPosOrder] = useState(false);
+  const [posSearchProduct, setPosSearchProduct] = useState('');
 
   const playNotificationSound = () => {
     try {
@@ -533,26 +542,22 @@ export default function AdminDashboard() {
     }
   };
 
-const handleDeleteProduct = async (id: string) => {
+  const handleDeleteProduct = async (id: string) => {
     if (!confirm('هل أنت متأكد من حذف هذا المنتج نهائياً بجميع خياراته وسجلاته؟')) return;
 
     try {
-      // 1. فك ارتباط الفاريانتس في الطلبات القديمة
       const { data: vars } = await supabase.from('product_variants').select('id').eq('product_id', id);
       if (vars && vars.length > 0) {
         const vIds = vars.map((v) => v.id);
         await supabase.from('order_items').update({ variant_id: null }).in('variant_id', vIds);
       }
 
-      // 2. حذف الفاريانتس التابعة للمنتج
       await supabase.from('product_variants').delete().eq('product_id', id);
 
-      // 3. محاولة حذف الصور فقط إن وُجد جدولها (تجاهل الخطأ إن لم يكن موجوداً)
       try {
         await supabase.from('product_images').delete().eq('product_id', id);
       } catch (_) {}
 
-      // 4. حذف المنتج نفسه
       const { error } = await supabase.from('products').delete().eq('id', id);
 
       if (error) {
@@ -567,8 +572,7 @@ const handleDeleteProduct = async (id: string) => {
     }
   };
 
-  // حفظ وتعديل المنتج مع الحل الجذري لمنع تكرار الخيارات (تحديث الفاريانتس بذكاء)
-const handleSaveProduct = async (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmittingProduct(true);
 
@@ -585,7 +589,6 @@ const handleSaveProduct = async (e: React.FormEvent) => {
     };
 
     if (isEditing && editingProductId) {
-      // 1. تحديث بيانات المنتج
       const { error: updateError } = await supabase
         .from('products')
         .update(payload)
@@ -597,7 +600,6 @@ const handleSaveProduct = async (e: React.FormEvent) => {
         return;
       }
 
-      // 2. تحديث الصورة
       if (imageUrl) {
         await supabase.from('product_images').delete().eq('product_id', editingProductId);
         await supabase.from('product_images').insert([
@@ -605,7 +607,6 @@ const handleSaveProduct = async (e: React.FormEvent) => {
         ]);
       }
 
-      // 3. تنظيف وتحديث الفاريانتس والتخلص من التكرار نهائياً:
       const { data: existingVars } = await supabase
         .from('product_variants')
         .select('id, color')
@@ -613,12 +614,10 @@ const handleSaveProduct = async (e: React.FormEvent) => {
 
       if (existingVars && existingVars.length > 0) {
         const vIds = existingVars.map((v) => v.id);
-        // فك ارتباط الطلبات السابقة بالفاريانتس حتى يسمح بحذف المكررات
         await supabase.from('order_items').update({ variant_id: null }).in('variant_id', vIds);
         await supabase.from('product_variants').delete().eq('product_id', editingProductId);
       }
 
-      // إدخال الخيارات النظيفة الجديدة فقط
       const variantsToInsert = validVariants.map((v) => ({
         product_id: editingProductId,
         color: v.color.trim(),
@@ -628,10 +627,9 @@ const handleSaveProduct = async (e: React.FormEvent) => {
 
       await supabase.from('product_variants').insert(variantsToInsert);
 
-      showToast('تم حفظ التعديلات وتنظيف الخيارات بنجاح');
+      showToast('تم حفظ التعديلات بنجاح');
       setShowEditModal(false);
     } else {
-      // إضافة منتج جديد
       const { data: prodData, error: prodError } = await supabase
         .from('products')
         .insert([{ ...payload, is_available: true }])
@@ -867,6 +865,125 @@ const handleSaveProduct = async (e: React.FormEvent) => {
     }
   };
 
+  // ----------------- دوال البيع السريع -----------------
+  const handleAddToPosCart = (product: Product, variant: Variant | null) => {
+    setPosCart((prev) => {
+      const idx = prev.findIndex(
+        (item) => item.product.id === product.id && item.variant?.id === variant?.id
+      );
+      if (idx > -1) {
+        const updated = [...prev];
+        updated[idx].quantity += 1;
+        return updated;
+      }
+      return [...prev, { product, variant, quantity: 1 }];
+    });
+    showToast(`أُضيف: ${product.title}`);
+  };
+
+  const handleRemoveFromPosCart = (index: number) => {
+    setPosCart((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUpdatePosQuantity = (index: number, delta: number) => {
+    setPosCart((prev) => {
+      const updated = [...prev];
+      const newQty = updated[index].quantity + delta;
+      if (newQty <= 0) {
+        return prev.filter((_, i) => i !== index);
+      }
+      updated[index].quantity = newQty;
+      return updated;
+    });
+  };
+
+  const posTotalAmount = useMemo(() => {
+    return posCart.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
+  }, [posCart]);
+
+  const handlePosCheckout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (posCart.length === 0) {
+      alert('يرجى اختيار منتج واحد على الأقل للطلب السريع');
+      return;
+    }
+    if (!posCustomerName.trim() || !posCustomerPhone.trim()) {
+      alert('يرجى إدخال اسم الزبون ورقم الهاتف');
+      return;
+    }
+
+    setSubmittingPosOrder(true);
+
+    try {
+      const { data: orderData, error: orderError } = await supabase
+        .from('orders')
+        .insert([
+          {
+            customer_name: posCustomerName.trim(),
+            customer_phone: posCustomerPhone.trim(),
+            address: posAddress.trim() || 'طلب مباشر من البث',
+            notes: posNotes.trim() ? `[طلب بث مباشر] ${posNotes.trim()}` : '[طلب بث مباشر]',
+            total_amount: posTotalAmount,
+            maps_link: null,
+          },
+        ])
+        .select()
+        .single();
+
+      if (orderError || !orderData) {
+        alert('حدث خطأ أثناء حفظ الطلب: ' + orderError?.message);
+        setSubmittingPosOrder(false);
+        return;
+      }
+
+      const orderItemsPayload = posCart.map((item) => ({
+        order_id: orderData.id,
+        product_id: item.product.id,
+        variant_id: item.variant?.id || null,
+        quantity: item.quantity,
+        price_at_purchase: item.product.price,
+      }));
+
+      await supabase.from('order_items').insert(orderItemsPayload);
+
+      for (const item of posCart) {
+        if (item.variant?.id) {
+          const currentStock = item.variant.stock_quantity || 0;
+          const newStock = Math.max(0, currentStock - item.quantity);
+          await supabase
+            .from('product_variants')
+            .update({ stock_quantity: newStock })
+            .eq('id', item.variant.id);
+        }
+      }
+
+      showToast(`تم تسجيل طلب ${posCustomerName} بنجاح`);
+      
+      setPosCustomerName('');
+      setPosCustomerPhone('');
+      setPosAddress('');
+      setPosNotes('');
+      setPosCart([]);
+
+      fetchOrders();
+      fetchProducts();
+    } catch (err: any) {
+      console.error(err);
+      alert('حدث خطأ أثناء الحفظ');
+    } finally {
+      setSubmittingPosOrder(false);
+    }
+  };
+
+  const posFilteredProducts = useMemo(() => {
+    let list = products.filter((p) => p.is_available);
+    if (posSearchProduct.trim()) {
+      const q = posSearchProduct.toLowerCase().trim();
+      list = list.filter((p) => p.title.toLowerCase().includes(q) || p.description.toLowerCase().includes(q));
+    }
+    return list;
+  }, [products, posSearchProduct]);
+
   const unreadNotificationsCount = notifications.filter((n) => !n.read).length;
 
   const markNotificationsAsRead = () => {
@@ -983,7 +1100,7 @@ const handleSaveProduct = async (e: React.FormEvent) => {
   return (
     <div className="min-h-screen bg-[#F8F9FA] flex flex-col md:flex-row text-zinc-800 font-sans relative antialiased" dir="rtl">
 
-      {/* شريط الإشعار الموحد (مطابق لأسلوب واجهة المتجر كبسولة سوداء وزجاجية) */}
+      {/* شريط الإشعار الموحد */}
       {adminToast && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-zinc-900 text-white px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2.5 border border-white/10 text-xs font-bold animate-in fade-in slide-in-from-top duration-200">
           <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -991,33 +1108,48 @@ const handleSaveProduct = async (e: React.FormEvent) => {
         </div>
       )}
 
-      {/* السايد بار */}
-      <aside className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-xl border-t border-zinc-200/80 px-3 py-2 md:relative md:border-t-0 md:border-l md:w-24 md:p-3 md:py-6 flex md:flex-col items-center justify-around md:justify-start shrink-0 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] md:shadow-none">
+      {/* السايد بار مع توحيد ألوان البيع السريع لتكون كلاسيكية */}
+      <aside className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-xl border-t border-zinc-200/80 px-2 py-2 md:relative md:border-t-0 md:border-l md:w-24 md:p-3 md:py-6 flex md:flex-col items-center justify-around md:justify-start shrink-0 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] md:shadow-none">
         <nav className="w-full flex md:flex-col items-center justify-around md:justify-start gap-1 md:gap-2.5">
           
           <button
             onClick={() => setActiveTab('orders')}
-            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-2.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
+            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-1.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
               activeTab === 'orders'
                 ? 'text-zinc-950 bg-zinc-100 shadow-xs font-black'
                 : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-50 font-bold'
             }`}
           >
-            <svg className="w-6 h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={activeTab === 'orders' ? 2.3 : 1.8}>
+            <svg className="w-5 h-5 md:w-6 md:h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={activeTab === 'orders' ? 2.3 : 1.8}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
             </svg>
             <span className="text-[10px] md:text-[11px] tracking-tight">الطلبات</span>
           </button>
 
+          {/* زر البيع السريع بأيقونة كلاسيكية بدون أحمر */}
+          <button
+            onClick={() => setActiveTab('quick_sale')}
+            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-1.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
+              activeTab === 'quick_sale'
+                ? 'text-zinc-950 bg-zinc-100 shadow-xs font-black'
+                : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-50 font-bold'
+            }`}
+          >
+            <svg className="w-5 h-5 md:w-6 md:h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={activeTab === 'quick_sale' ? 2.3 : 1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <span className="text-[10px] md:text-[11px] tracking-tight">بيع سريع</span>
+          </button>
+
           <button
             onClick={() => setActiveTab('products')}
-            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-2.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
+            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-1.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
               activeTab === 'products'
                 ? 'text-zinc-950 bg-zinc-100 shadow-xs font-black'
                 : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-50 font-bold'
             }`}
           >
-            <svg className="w-6 h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={activeTab === 'products' ? 2.3 : 1.8}>
+            <svg className="w-5 h-5 md:w-6 md:h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={activeTab === 'products' ? 2.3 : 1.8}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
             </svg>
             <span className="text-[10px] md:text-[11px] tracking-tight">المنتجات</span>
@@ -1028,13 +1160,13 @@ const handleSaveProduct = async (e: React.FormEvent) => {
               resetProductForm();
               setActiveTab('add_product');
             }}
-            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-2.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
+            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-1.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
               activeTab === 'add_product'
                 ? 'text-zinc-950 bg-zinc-100 shadow-xs font-black'
                 : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-50 font-bold'
             }`}
           >
-            <svg className="w-6 h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.3}>
+            <svg className="w-5 h-5 md:w-6 md:h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.3}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span className="text-[10px] md:text-[11px] tracking-tight">إضافة منتج</span>
@@ -1042,13 +1174,13 @@ const handleSaveProduct = async (e: React.FormEvent) => {
 
           <button
             onClick={() => setActiveTab('settings')}
-            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-2.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
+            className={`flex-1 md:flex-initial md:w-full flex flex-col items-center justify-center py-2 px-1.5 rounded-2xl text-center transition-all duration-200 active:scale-95 ${
               activeTab === 'settings'
                 ? 'text-zinc-950 bg-zinc-100 shadow-xs font-black'
                 : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-50 font-bold'
             }`}
           >
-            <svg className="w-6 h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.3}>
+            <svg className="w-5 h-5 md:w-6 md:h-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.3}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
@@ -1373,7 +1505,392 @@ const handleSaveProduct = async (e: React.FormEvent) => {
           </div>
         )}
 
-        {/* 2. تبويب استعراض وإدارة المنتجات */}
+        {/* ----------------- 2. تبويب البيع السريع (POS) المعدل ----------------- */}
+        {activeTab === 'quick_sale' && (
+          <div className="max-w-6xl mx-auto space-y-6">
+            
+            {/* الهيدر العلوي المتطابق تماماً مع صفحة الطلبات واللوغو بنفس مكانه */}
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-3 w-full">
+                
+                <div className="flex items-center">
+                  <span className="text-base sm:text-lg font-black tracking-wider text-zinc-950 select-none">
+                    {storeName}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 sm:gap-3">
+                  <div className="relative flex items-center">
+                    {showSearchInput ? (
+                      <div className="flex items-center bg-zinc-200/60 rounded-full px-3 py-1.5 transition-all duration-200 animate-in fade-in w-40 sm:w-56">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={posSearchProduct}
+                          onChange={(e) => setPosSearchProduct(e.target.value)}
+                          placeholder="ابحث عن منتج..."
+                          className="bg-transparent text-xs font-bold text-zinc-900 outline-none w-full border-none focus:ring-0 placeholder:text-zinc-500 placeholder:font-medium p-0"
+                        />
+                        <button
+                          onClick={() => {
+                            setShowSearchInput(false);
+                            setPosSearchProduct('');
+                          }}
+                          className="text-zinc-400 hover:text-zinc-700 text-xs p-1 mr-1"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setShowSearchInput(true)}
+                        className="p-2 text-zinc-600 hover:text-zinc-900 transition active:scale-95"
+                        title="بحث في المنتجات"
+                      >
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="relative" ref={notificationsRef}>
+                    <button
+                      onClick={() => {
+                        setShowNotifications(!showNotifications);
+                        if (!showNotifications) markNotificationsAsRead();
+                      }}
+                      className="p-2 text-zinc-600 hover:text-zinc-900 transition active:scale-95 relative"
+                      title="الإشعارات"
+                    >
+                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                      </svg>
+                      {unreadNotificationsCount > 0 && (
+                        <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-rose-500 rounded-full ring-2 ring-white" />
+                      )}
+                    </button>
+
+                    {showNotifications && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-40 sm:hidden bg-black/10" 
+                          onClick={() => setShowNotifications(false)} 
+                        />
+                        
+                        <div className="fixed inset-x-4 top-16 sm:inset-auto sm:absolute sm:top-full sm:mt-2 sm:left-0 sm:right-auto w-auto sm:w-80 max-w-sm mx-auto sm:mx-0 bg-white rounded-2xl shadow-2xl border border-zinc-200/90 p-4 z-50 animate-in fade-in slide-in-from-top-2 duration-200 text-right">
+                          <div className="flex items-center justify-between pb-3 border-b border-zinc-100 mb-2">
+                            <span className="font-extrabold text-xs text-zinc-900">إشعارات الطلبات</span>
+                            <span className="text-[10px] bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full font-bold">
+                              {notifications.length} طلب
+                            </span>
+                          </div>
+
+                          <div className="space-y-2 max-h-72 overflow-y-auto no-scrollbar">
+                            {notifications.length === 0 ? (
+                              <div className="text-center py-6 text-zinc-400 text-xs font-medium">
+                                لا توجد إشعارات حالياً
+                              </div>
+                            ) : (
+                              notifications.map((notif) => (
+                                <div
+                                  key={notif.id}
+                                  className="p-2.5 bg-zinc-50 hover:bg-zinc-100 rounded-xl transition text-xs space-y-1 border border-zinc-100"
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-extrabold text-zinc-900">{notif.customer_name}</span>
+                                    <span className="font-black text-zinc-900">${notif.total_amount}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                                    <span>طلب جديد #{notif.id.slice(0, 6)}</span>
+                                    <span dir="ltr">{new Date(notif.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={fetchProducts}
+                    disabled={loadingProducts}
+                    className="p-2 text-zinc-600 hover:text-zinc-900 transition active:scale-95 disabled:opacity-50"
+                    title="تحديث البيانات"
+                  >
+                    <svg
+                      className={`w-6 h-6 ${loadingProducts ? 'animate-spin' : ''}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+
+                  <div 
+                    onClick={() => setActiveTab('settings')}
+                    className="relative flex items-center justify-center p-0.5 rounded-full border-2 border-rose-500 shadow-sm cursor-pointer hover:opacity-90 transition shrink-0"
+                    title="إعدادات الحساب"
+                  >
+                    <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full p-[2px] bg-white flex items-center justify-center overflow-hidden">
+                      {profileAvatarUrl ? (
+                        <img src={profileAvatarUrl} alt="Avatar" className="w-full h-full object-cover rounded-full" />
+                      ) : (
+                        <div className="w-full h-full rounded-full bg-orange-600 flex items-center justify-center text-white font-black text-sm shadow-inner">
+                          {storeName.slice(0, 1) || 'S'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* العنوان الصافي مع التباعد المنظم مثل بقية الصفحات وبدون عبارة POS */}
+              <div className="space-y-1">
+                <h1 className="text-2xl sm:text-3xl font-black text-zinc-900 tracking-tight">البيع السريع</h1>
+                <p className="text-xs text-zinc-400 font-medium">تسجيل طلبات الزبائن مباشرة بنقرة واحدة وتوثيقها فوراً في النظام أثناء البث</p>
+              </div>
+
+            </div>
+
+            {/* الحاويتان متساويتان في الطول (items-stretch) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+              
+              {/* القسم الأيمن: استعراض المنتجات واختيارها */}
+              <div className="lg:col-span-7 bg-white rounded-3xl border border-zinc-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.02)] p-5 sm:p-6 flex flex-col justify-between">
+                
+                <div className="space-y-4 flex-grow flex flex-col">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={posSearchProduct}
+                      onChange={(e) => setPosSearchProduct(e.target.value)}
+                      placeholder="ابحث عن منتج بالاسم..."
+                      className="w-full p-3 pr-10 bg-zinc-50 border border-zinc-200 rounded-2xl text-xs font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 transition"
+                    />
+                    <div className="absolute right-3.5 top-3.5 text-zinc-400">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </div>
+                  </div>
+
+                  <div className="h-[68vh] overflow-y-auto no-scrollbar space-y-3 pt-1 flex-grow">
+                    {posFilteredProducts.length === 0 ? (
+                      <div className="text-center py-24 text-zinc-400 text-xs font-bold">
+                        لا توجد منتجات متوفرة للبيع السريع.
+                      </div>
+                    ) : (
+                      posFilteredProducts.map((p) => {
+                        const img = p.product_images?.[0]?.image_url || 'https://placehold.co/100x100?text=Item';
+
+                        return (
+                          <div
+                            key={p.id}
+                            className="p-3 bg-zinc-50/70 hover:bg-zinc-100/60 rounded-2xl border border-zinc-200/80 transition duration-150 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                          >
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={img}
+                                alt={p.title}
+                                className="w-14 h-14 rounded-xl object-cover bg-white border border-zinc-200 shrink-0"
+                              />
+                              <div>
+                                <h4 className="font-extrabold text-xs sm:text-sm text-zinc-900 leading-tight">
+                                  {p.title}
+                                </h4>
+                                <span className="text-xs font-black text-zinc-900 mt-1 block">
+                                  ${p.price}
+                                </span>
+                                <span className="text-[10px] text-zinc-400 font-semibold">
+                                  المتوفر بالمستودع: {p.total_stock || 0}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* أزرار إضافة الألوان والخيارات للطلب بنقرة واحدة */}
+                            <div className="flex flex-wrap items-center gap-1.5 w-full sm:w-auto justify-end">
+                              {p.product_variants && p.product_variants.length > 0 ? (
+                                p.product_variants.map((v) => (
+                                  <button
+                                    key={v.id}
+                                    type="button"
+                                    onClick={() => handleAddToPosCart(p, v)}
+                                    className="text-[11px] font-bold bg-white hover:bg-zinc-900 hover:text-white border border-zinc-200 px-3 py-1.5 rounded-xl transition shadow-2xs active:scale-95 text-zinc-800"
+                                  >
+                                    + {v.color}
+                                  </button>
+                                ))
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddToPosCart(p, null)}
+                                  className="text-xs font-bold bg-zinc-900 hover:bg-black text-white px-3.5 py-1.5 rounded-xl transition shadow-2xs active:scale-95"
+                                >
+                                  + إضافة
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* القسم الأيسر: فورم وفاتورة البيع السريع بطول مماثل ومتناسق */}
+              <div className="lg:col-span-5 bg-white rounded-3xl border border-zinc-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.02)] p-5 sm:p-6 flex flex-col justify-between">
+                
+                <div className="space-y-4 flex-grow flex flex-col">
+                  <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+                    <h3 className="font-black text-sm text-zinc-900 flex items-center gap-1.5">
+                      <span>فاتورة الطلب السريع</span>
+                      <span className="text-xs bg-zinc-100 text-zinc-700 px-2 py-0.5 rounded-full font-bold">
+                        {posCart.length} عناصر
+                      </span>
+                    </h3>
+                    <div className="flex items-center gap-3">
+                      <span className="text-base font-black text-zinc-950">${posTotalAmount}</span>
+                      {posCart.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setPosCart([])}
+                          className="text-[11px] font-bold text-rose-600 hover:underline"
+                        >
+                          إفراغ
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* قائمة العناصر المختارة */}
+                  {posCart.length === 0 ? (
+                    <div className="text-center py-12 text-zinc-400 text-xs font-bold border-2 border-dashed border-zinc-100 rounded-2xl flex items-center justify-center">
+                      اضغط على أي منتج من القائمة لإضافته للطلب
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-56 overflow-y-auto no-scrollbar">
+                      {posCart.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-zinc-50 px-3 py-2.5 rounded-xl border border-zinc-200/60 flex items-center justify-between text-xs"
+                        >
+                          <div>
+                            <span className="font-extrabold text-zinc-900 block">{item.product.title}</span>
+                            <span className="text-[10px] text-zinc-500 font-semibold">
+                              {item.variant ? item.variant.color : 'افتراضي'} (${item.product.price})
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdatePosQuantity(idx, -1)}
+                              className="w-6 h-6 rounded-lg bg-white border border-zinc-200 flex items-center justify-center font-black text-zinc-700 hover:bg-zinc-100"
+                            >
+                              -
+                            </button>
+                            <span className="font-black text-zinc-900 w-4 text-center">{item.quantity}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdatePosQuantity(idx, 1)}
+                              className="w-6 h-6 rounded-lg bg-white border border-zinc-200 flex items-center justify-center font-black text-zinc-700 hover:bg-zinc-100"
+                            >
+                              +
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFromPosCart(idx)}
+                              className="text-rose-500 hover:text-rose-700 text-xs font-black p-1 mr-1"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* نموذج معلومات الزبون المطول ليملأ المساحة بتناسق */}
+                  <form onSubmit={handlePosCheckout} className="space-y-3.5 pt-3 border-t border-zinc-100 flex-grow flex flex-col justify-between">
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-[11px] font-extrabold text-zinc-700 mb-1">اسم الزبون / المعرف</label>
+                        <input
+                          type="text"
+                          required
+                          value={posCustomerName}
+                          onChange={(e) => setPosCustomerName(e.target.value)}
+                          placeholder="مثال: أحمد علي (أو يوزر البث)"
+                          className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-extrabold text-zinc-700 mb-1">رقم الهاتف</label>
+                        <input
+                          type="tel"
+                          required
+                          value={posCustomerPhone}
+                          onChange={(e) => setPosCustomerPhone(e.target.value)}
+                          placeholder="07700000000"
+                          className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900"
+                          dir="ltr"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-extrabold text-zinc-700 mb-1">العنوان أو المحافظة</label>
+                        <input
+                          type="text"
+                          value={posAddress}
+                          onChange={(e) => setPosAddress(e.target.value)}
+                          placeholder="مثال: ديالى - بعقوبة"
+                          className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-extrabold text-zinc-700 mb-1">ملاحظة البث (اختياري)</label>
+                        <textarea
+                          rows={2}
+                          value={posNotes}
+                          onChange={(e) => setPosNotes(e.target.value)}
+                          placeholder="مثال: خصم خاص للبث، تسليم مستعجل..."
+                          className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900 resize-none"
+                        />
+                      </div>
+                    </div>
+
+                    {/* زر التأكيد بدون أيقونة الصاعقة */}
+                    <div className="pt-2">
+                      <button
+                        type="submit"
+                        disabled={submittingPosOrder || posCart.length === 0}
+                        className="w-full bg-zinc-900 hover:bg-black text-white text-xs font-black py-4 rounded-2xl transition disabled:opacity-50 shadow-md active:scale-[0.99] flex items-center justify-center"
+                      >
+                        {submittingPosOrder ? (
+                          <span>جاري حفظ الطلب في النظام...</span>
+                        ) : (
+                          <span>تأكيد وتسجيل الطلب (${posTotalAmount})</span>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {/* 3. تبويب استعراض وإدارة المنتجات */}
         {activeTab === 'products' && (
           <div className="max-w-6xl mx-auto space-y-6">
             
@@ -1618,7 +2135,6 @@ const handleSaveProduct = async (e: React.FormEvent) => {
                             </div>
                           )}
 
-                          {/* عرض الخيارات بدون أي تكرار */}
                           <div className="flex flex-wrap gap-1 mt-2.5">
                             {p.product_variants?.map((v, i) => (
                               <span
@@ -1672,14 +2188,14 @@ const handleSaveProduct = async (e: React.FormEvent) => {
           </div>
         )}
 
-        {/* 3. صفحة إضافة المنتجات */}
+        {/* 4. صفحة إضافة المنتجات */}
         {activeTab === 'add_product' && (
           <div className="max-w-4xl mx-auto space-y-6">
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-zinc-900 tracking-tight">إضافة منتج</h1>
             </div>
 
-            {/* 1. قائمة منسدلة: إضافة منتج يدوياً */}
+            {/* إضافة منتج يدوياً */}
             <div className="bg-white rounded-3xl border border-zinc-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.02)] overflow-hidden transition-all duration-300">
               <button
                 type="button"
@@ -1855,7 +2371,7 @@ const handleSaveProduct = async (e: React.FormEvent) => {
               )}
             </div>
 
-            {/* 2. قائمة منسدلة: إرفاق ملف Excel */}
+            {/* إرفاق ملف Excel */}
             <div className="bg-white rounded-3xl border border-zinc-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.02)] overflow-hidden transition-all duration-300">
               <button
                 type="button"
@@ -1914,14 +2430,14 @@ const handleSaveProduct = async (e: React.FormEvent) => {
           </div>
         )}
 
-        {/* 4. تبويب الإعدادات */}
+        {/* 5. تبويب الإعدادات */}
         {activeTab === 'settings' && (
           <div className="max-w-4xl mx-auto space-y-6">
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-zinc-900 tracking-tight">الإعدادات</h1>
             </div>
 
-            {/* 1. قائمة منسدلة: الملف التعريفي وهوية المتجر */}
+            {/* الملف التعريفي وهوية المتجر */}
             <div className="bg-white rounded-3xl border border-zinc-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.02)] overflow-hidden transition-all duration-300">
               <button
                 type="button"
@@ -2024,7 +2540,7 @@ const handleSaveProduct = async (e: React.FormEvent) => {
               )}
             </div>
 
-            {/* 2. قائمة منسدلة: أمان لوحة التحكم وتغيير رمز المرور */}
+            {/* أمان لوحة التحكم (الرمز السري) */}
             <div className="bg-white rounded-3xl border border-zinc-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.02)] overflow-hidden transition-all duration-300">
               <button
                 type="button"
@@ -2102,7 +2618,7 @@ const handleSaveProduct = async (e: React.FormEvent) => {
               )}
             </div>
 
-            {/* 3. قائمة منسدلة: إدارة الجلسة وزيارة المتجر */}
+            {/* إدارة الجلسة وزيارة المتجر */}
             <div className="bg-white rounded-3xl border border-zinc-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.02)] overflow-hidden transition-all duration-300">
               <button
                 type="button"
